@@ -1,0 +1,25 @@
+# IMPORTANT: Replace <SET> placeholders with valid Python code and variable names.
+# Plot
+import plotly.graph_objects as go
+fig = go.Figure(data=[go.Table(
+    header=dict(values=['<b><SET</b>', '<b>SET</b>',...],
+                line_color='darkslategray',
+                fill_color='#1B5E20',
+                align=['left','center'],
+                font=dict(color='white' , size=14)),
+    cells=dict(values=<SET>,
+               line_color='darkslategray',
+               align=['left', 'center'],
+               font=dict(color='white', size=13 ),
+               fill_color='#333333'))])
+
+# Default safe Layout
+fig.update_layout(
+    width=900, 
+    height=600, 
+    margin=dict(l=40, r=40, t=65, b=65),
+    title_font_size=20,
+)
+
+# IMPORTANT: assign the final figure/output to 'result'
+result = fig

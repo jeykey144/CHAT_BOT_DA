@@ -1,0 +1,129 @@
+# HEATMAP GENERATION RULES
+
+Create exactly ONE valid Plotly heatmap and assign it to variable: result.
+
+## Libraries
+Use:
+- pandas as pd
+- numpy as np
+- plotly.graph_objects as go
+- plotly.express as px
+
+## Data source
+The datasets are already loaded as pandas DataFrames:
+- DF_1, DF_2, DF_3, ...
+
+Choose the most relevant DataFrame for the user request.
+
+## CRITICAL: Choose the correct heatmap type
+
+### TYPE A — Correlation / value matrix heatmap (MOST COMMON)
+Use when the user asks for:
+- "ma trận tương quan", "correlation matrix", "heatmap của các cột số"
+- Visualizing relationships between numeric variables
+- When the data should be a square matrix (rows = columns = variables)
+
+```python
+df = DF_1.copy()
+
+# Select numeric columns only
+numeric_df = df.select_dtypes(include='number')
+
+# Build correlation matrix
+corr = numeric_df.corr()
+
+fig = go.Figure(data=go.Heatmap(
+    z=corr.values,
+    x=corr.columns.tolist(),
+    y=corr.columns.tolist(),
+    colorscale='RdBu_r',
+    zmid=0,
+    text=[[f"{v:.2f}" for v in row] for row in corr.values],
+    texttemplate="%{text}",
+    hovertemplate="<b>%{y}</b> vs <b>%{x}</b><br>Correlation: %{z:.2f}<extra></extra>",
+))
+```
+
+### TYPE B — Aggregated category × category heatmap
+Use when the user asks for:
+- Heatmap showing a metric for two categorical columns (e.g., region × product)
+- "heatmap doanh thu theo vùng và sản phẩm"
+
+```python
+df = DF_1.copy()
+df['metric_col'] = pd.to_numeric(df['metric_col'], errors='coerce')
+
+pivot = df.pivot_table(index='ROW_COL', columns='COL_COL', values='METRIC_COL', aggfunc='mean')
+
+fig = go.Figure(data=go.Heatmap(
+    z=pivot.values,
+    x=pivot.columns.tolist(),
+    y=pivot.index.tolist(),
+    colorscale='Blues',
+    hovertemplate="<b>%{y}</b> | <b>%{x}</b><br>Value: %{z:.2f}<extra></extra>",
+))
+```
+
+## Critical reasoning rules
+1) NEVER use `px.density_heatmap` for correlation matrices or value-based heatmaps — it only does density counting.
+2) Use `go.Heatmap` for all matrix-style heatmaps (correlation, pivot, aggregated).
+3) Use `px.density_heatmap` ONLY when the user explicitly asks for a 2D histogram / density distribution of raw data points.
+4) If the user asks for "tương quan" (correlation), always use TYPE A with corr().
+5) If the user asks for a metric across two categorical dimensions, use TYPE B with pivot_table().
+6) Never use markdown fences. Output raw Python code only.
+7) Do not call fig.show().
+
+## Data cleaning & Filtering rules
+Before plotting:
+- create a copy: df = DF_n.copy()
+- CRITICAL FILTERING: If the user explicitly asks for a subset of data, filter BEFORE aggregating.
+- Drop rows where required columns are NaN.
+
+## Output structure (Type A — Correlation matrix)
+
+df = DF_1.copy()
+numeric_df = df.select_dtypes(include='number')
+corr = numeric_df.corr()
+
+fig = go.Figure(data=go.Heatmap(
+    z=corr.values,
+    x=corr.columns.tolist(),
+    y=corr.columns.tolist(),
+    colorscale='RdBu_r',
+    zmid=0,
+    text=[[f"{v:.2f}" for v in row] for row in corr.values],
+    texttemplate="%{text}",
+))
+
+fig.update_layout(
+    title=<TITLE>,
+    width=900,
+    height=700,
+    margin=dict(l=60, r=40, t=65, b=60),
+    title_font_size=20,
+)
+
+result = fig
+
+## Output structure (Type B — Pivot heatmap)
+
+df = DF_1.copy()
+df[<METRIC_COL>] = pd.to_numeric(df[<METRIC_COL>], errors='coerce')
+pivot = df.pivot_table(index=<ROW_COL>, columns=<COL_COL>, values=<METRIC_COL>, aggfunc='mean')
+
+fig = go.Figure(data=go.Heatmap(
+    z=pivot.values,
+    x=pivot.columns.tolist(),
+    y=pivot.index.tolist(),
+    colorscale='Blues',
+))
+
+fig.update_layout(
+    title=<TITLE>,
+    width=900,
+    height=600,
+    margin=dict(l=80, r=40, t=65, b=65),
+    title_font_size=20,
+)
+
+result = fig

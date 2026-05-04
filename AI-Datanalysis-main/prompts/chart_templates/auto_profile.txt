@@ -1,0 +1,67 @@
+[AUTO PROFILING - FULL EDA MODE]
+The user requested data exploration / overview.
+Generate a complete exploratory data analysis (EDA). Do not produce a single flat table.
+
+=== Output format ===
+result = tuple(item1, item2, ...)
+Each item will be rendered automatically: str -> markdown, DataFrame -> table, Figure -> chart.
+
+=== Steps to implement (in order) ===
+
+STEP 1 - Column classification
+import re
+_ID_PAT = re.compile(r'(^|_)id$|^id(_|$)|(^|_)code$|^code(_|$)')
+Classify each column into: numeric / categorical / datetime / id
+  - datetime: is_datetime64_any_dtype OR 'date'/'time' in name
+  - numeric: is_numeric_dtype AND NOT id_pattern AND NOT (integer with all unique values)
+  - id/key: matches _ID_PAT, OR integer with 100% unique values
+  - categorical: everything else (text, object, bool)
+
+STEP 2 - Missing & duplicate counts
+  _miss = DF_1.isnull().sum()
+  _dup = int(DF_1.duplicated().sum())
+
+STEP 3 - Overview text (markdown string)
+  "## Kham pha du lieu (EDA)\n### 1. Tong quan\n| col | value |\n..."
+  Include: rows, cols, counts per group, list of all columns with dtype and group label.
+
+STEP 4 - Quality DataFrame (one row per column)
+  Columns: Cot | Kieu du lieu | Nhom | Thieu (count) | Thieu (%) | Unique values
+  Precede with a markdown header string: "### 2. Chat luong du lieu\n..."
+
+STEP 5 - Numeric statistics DataFrame
+  For each numeric column compute: Count | Mean | Std | Min | Q1(25%) | Median | Q3(75%) | Max | Thieu | Outliers(IQR)
+  Ensure the numeric summary includes `min` and `max` values for every numeric column.
+  Use pd.to_numeric(col, errors='coerce').dropna() - do not use df.describe().
+  Precede with markdown header: "### 3. Thong ke mo ta - Bien so"
+
+STEP 6 - Categorical statistics (per column, top 10 values)
+  For each categorical column (max 6): value_counts top 10
+  DataFrame columns: Gia tri | Tan suat | Ty le (%)
+  Precede with markdown header: "### 4. Thong ke mo ta - Bien phan loai"
+
+STEP 7 - Distribution & outlier text (markdown string)
+  For each numeric column: skewness, outlier count via IQR method.
+  "### 5. Phan phoi & Outlier\n- col: phan phoi gan chuan | 3 outliers (0.2%)\n..."
+
+STEP 8 - Histogram subplots (go.Figure)
+  Use make_subplots from plotly.subplots. Max 6 numeric columns, 3 per row.
+  go.Histogram per subplot. Title: "Phan phoi bien so (Histogram)"
+
+STEP 9 - Bar chart for top 2 categorical columns (go.Figure each)
+  go.Bar showing value_counts top 15.
+
+STEP 10 - Correlation heatmap (go.Figure) - only if 2+ numeric columns
+  go.Heatmap with texttemplate="%{text}", colorscale="RdBu_r", zmid=0, zmin=-1, zmax=1.
+  Title: "Ma tran tuong quan"
+
+STEP 11 - Insights text (markdown string)
+  "### 7. Ket luan & De xuat\n..."
+  Include: duplicate / missing warnings, skewed columns, 5 preprocessing suggestions.
+
+=== STRICT RULES ===
+- Do not use df.describe() - wrong format and may include non-numeric columns.
+- Do not produce a single flat table mixing metadata with stats.
+- Float columns are never skipped for uniqueness - they are real measurements.
+- result must be a tuple of all items in the order above.
+- Use variable prefix _ to avoid name collisions (for example: _num_cols, _cat_cols).

@@ -1,0 +1,305 @@
+# auth.py
+from __future__ import annotations
+
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple
+
+from sqlalchemy import Engine, text
+from sqlalchemy.exc import IntegrityError
+
+from ai_datanalysis.services.ops_service import (
+    DEFAULT_LOGIN_LIMIT,
+    DEFAULT_LOGIN_WINDOW_S,
+    consume_rate_limit,
+)
+
+
+def _utc_now() -> datetime:
+    """Return current UTC time as a naive datetime (compatible with MySQL UTC_TIMESTAMP)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def _hash_password_pbkdf2(password: str, salt: Optional[bytes] = None) -> Tuple[bytes, bytes]:
+    """
+    PBKDF2-HMAC-SHA256 hash.
+    Returns (salt_bytes, hash_bytes).
+    """
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
+    return salt, dk
+
+
+def _migrate_add_fk_user_sessions(engine: Engine) -> None:
+    """
+    Migration an toàn: thêm FK user_sessions.username → users.username nếu chưa có.
+    - Kiểm tra FK đã tồn tại chưa qua information_schema (idempotent).
+    - Dọn orphan sessions trước để tránh IntegrityError khi ALTER TABLE.
+    - Chạy trong connection riêng vì DDL trong MySQL gây implicit commit.
+    """
+    with engine.connect() as conn:
+        fk_exists = conn.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM information_schema.TABLE_CONSTRAINTS
+                WHERE CONSTRAINT_SCHEMA = DATABASE()
+                  AND TABLE_NAME        = 'user_sessions'
+                  AND CONSTRAINT_NAME   = 'fk_user_sessions_username'
+                  AND CONSTRAINT_TYPE   = 'FOREIGN KEY'
+                """
+            )
+        ).scalar_one()
+
+    if fk_exists:
+        return  # FK đã tồn tại, không cần làm gì thêm
+
+    # Bước 1: Dọn các session mồ côi (username không có trong bảng users)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM user_sessions
+                WHERE username NOT IN (SELECT username FROM users)
+                """
+            )
+        )
+
+    # Bước 2: Thêm FK constraint — DDL gây implicit commit, dùng connection riêng
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                ALTER TABLE user_sessions
+                  ADD CONSTRAINT fk_user_sessions_username
+                  FOREIGN KEY (username)
+                  REFERENCES users(username)
+                  ON DELETE CASCADE
+                  ON UPDATE CASCADE
+                """
+            )
+        )
+        conn.commit()
+
+
+def init_auth_db(engine: Engine) -> None:
+    """
+    Create tables if not exist, then run safe migrations.
+    Compatible with MySQL 8.0.
+    """
+    ddl_users = """
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      username VARCHAR(50) NOT NULL,
+      email VARCHAR(255) NULL,
+      password_hash VARBINARY(255) NOT NULL,
+      salt VARBINARY(255) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_login TIMESTAMP NULL DEFAULT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_users_username (username),
+      UNIQUE KEY uq_users_email (email)
+    ) ENGINE=InnoDB;
+    """
+
+    ddl_audit = """
+    CREATE TABLE IF NOT EXISTS login_audit (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      username VARCHAR(50) NOT NULL,
+      success TINYINT(1) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_login_audit_user_time (username, created_at)
+    ) ENGINE=InnoDB;
+    """
+
+    # Với fresh install: CREATE TABLE IF NOT EXISTS đã bao gồm FK ngay từ đầu.
+    # Với DB đang chạy (bảng đã tồn tại): FK được thêm bởi _migrate_add_fk_user_sessions.
+    ddl_sessions = """
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      username VARCHAR(50) NOT NULL,
+      session_token VARCHAR(255) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_user_sessions_token (session_token),
+      KEY idx_user_sessions_user_exp (username, expires_at),
+      KEY idx_user_sessions_exp (expires_at),
+      CONSTRAINT fk_user_sessions_username
+        FOREIGN KEY (username)
+        REFERENCES users(username)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+    ) ENGINE=InnoDB;
+    """
+
+    with engine.begin() as conn:
+        conn.execute(text(ddl_users))
+        conn.execute(text(ddl_audit))
+        conn.execute(text(ddl_sessions))
+        conn.execute(text("DELETE FROM user_sessions WHERE expires_at <= UTC_TIMESTAMP()"))
+
+    # Migration: thêm FK cho DB đã tồn tại (idempotent, an toàn khi gọi nhiều lần)
+    _migrate_add_fk_user_sessions(engine)
+
+
+SESSION_TTL_DAYS = 7
+
+
+def create_session(engine: Engine, username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    expires_at = _utc_now() + timedelta(days=SESSION_TTL_DAYS)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM user_sessions WHERE username = :u OR expires_at <= UTC_TIMESTAMP()"),
+            {"u": username},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO user_sessions(username, session_token, expires_at)
+                VALUES (:u, :t, :exp)
+                """
+            ),
+            {"u": username, "t": token, "exp": expires_at},
+        )
+    return token
+
+
+def get_session_username(engine: Engine, token: str) -> str | None:
+    if not token:
+        return None
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT username
+                FROM user_sessions
+                WHERE session_token = :t AND expires_at > UTC_TIMESTAMP()
+                LIMIT 1
+                """
+            ),
+            {"t": token},
+        ).fetchone()
+    return row[0] if row else None
+
+
+def delete_session(engine: Engine, token: str) -> None:
+    if not token:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM user_sessions WHERE session_token = :t"),
+            {"t": token},
+        )
+
+
+def register_user(engine: Engine, username: str, password: str, email: Optional[str] = None) -> Tuple[bool, str]:
+    username_n = normalize_username(username)
+
+    if len(username_n) < 3:
+        return False, "Tên đăng nhập phải có ít nhất 3 ký tự."
+    if len(password) < 6:
+        return False, "Mật khẩu phải có ít nhất 6 ký tự."
+    if email:
+        email = email.strip().lower()
+
+    salt, pw_hash = _hash_password_pbkdf2(password)
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO users(username, email, password_hash, salt, created_at)
+                    VALUES (:username, :email, :password_hash, :salt, NOW())
+                    """
+                ),
+                {
+                    "username": username_n,
+                    "email": email,
+                    "password_hash": pw_hash,
+                    "salt": salt,
+                },
+            )
+        return True, "Đăng ký thành công. Bạn có thể đăng nhập ngay."
+    except IntegrityError as e:
+        # Inspect the original DB error code/message — more reliable than str(e)
+        orig = str(e.orig).lower() if e.orig else str(e).lower()
+        if "uq_users_username" in orig or ("username" in orig and "duplicate" in orig):
+            return False, "Tên đăng nhập đã tồn tại."
+        if "uq_users_email" in orig or ("email" in orig and "duplicate" in orig):
+            return False, "Email đã tồn tại."
+        return False, "Lỗi đăng ký: trùng lặp dữ liệu."
+    except Exception as e:
+        return False, f"Lỗi đăng ký: {type(e).__name__}"
+
+
+def verify_user(engine: Engine, username: str, password: str) -> Tuple[bool, str]:
+    username_n = normalize_username(username)
+
+    if not consume_rate_limit(
+        engine,
+        action_key="login_attempt",
+        scope_key=username_n or "anonymous",
+        limit=DEFAULT_LOGIN_LIMIT,
+        window_seconds=DEFAULT_LOGIN_WINDOW_S,
+    ):
+        return False, "Bạn đã thử đăng nhập quá nhiều lần. Hãy thử lại sau."
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT password_hash, salt, is_active
+                FROM users
+                WHERE username = :username
+                LIMIT 1
+                """
+            ),
+            {"username": username_n},
+        ).fetchone()
+
+        if not row:
+            _audit(conn, username_n, success=False)
+            return False, "Sai tên đăng nhập hoặc mật khẩu."
+
+        pw_hash_db, salt_db, is_active = row
+
+        if int(is_active) != 1:
+            _audit(conn, username_n, success=False)
+            return False, "Tài khoản đang bị khóa."
+
+        _, candidate_hash = _hash_password_pbkdf2(password, salt=salt_db)
+
+        if hmac.compare_digest(candidate_hash, pw_hash_db):
+            conn.execute(
+                text("UPDATE users SET last_login = NOW() WHERE username = :username"),
+                {"username": username_n},
+            )
+            _audit(conn, username_n, success=True)
+            return True, "Đăng nhập thành công."
+
+        _audit(conn, username_n, success=False)
+        return False, "Sai tên đăng nhập hoặc mật khẩu."
+
+
+def _audit(conn, username: str, success: bool) -> None:
+    conn.execute(
+        text(
+            "INSERT INTO login_audit(username, success, created_at) VALUES (:u, :s, NOW())"
+        ),
+        {"u": username, "s": 1 if success else 0},
+    )

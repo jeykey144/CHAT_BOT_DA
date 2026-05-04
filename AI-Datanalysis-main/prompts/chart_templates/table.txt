@@ -1,0 +1,14 @@
+# DATA LISTING / CALCULATION RULES
+1) Your goal is to list data, display a table, or perform a calculation. DO NOT output a chart/figure.
+2) Do NOT generate a Plotly figure (`go.Figure` or `px.something`).
+3) Use pandas to perform the required sorting, filtering, and aggregation.
+4) CRITICAL FILTERING: If the user explicitly asks for a subset of data (e.g. "sản phẩm là laptop", "năm 2023", "chỉ lấy khu vực A"), you MUST filter the DataFrame using pandas boolean indexing (e.g. `df = df[df['product'] == 'laptop']`) BEFORE applying any sorting, groupby, or calculations.
+5) Do NOT truncate the dataframe using `.head()`, `.tail()`, or `[:N]` unless the user specifically asks for the top/bottom N rows. The output must contain all relevant values.
+6) Assign the final result to the variable `result`. 
+   - If the result is a table, `result = df_final`
+   - If the result is a single number or text, `result = "Kết quả: " + str(value)`
+7) WHEN AGGREGATING OR GROUPING: 
+   - Write standard pandas `groupby` logic. Choose the correct aggregation function (sum, mean, count, nunique, etc.) based on the user's intent.
+   - Always use `.reset_index()` after `groupby` to ensure the final table is a standard flat DataFrame.
+   - Do NOT force computation across horizontal columns (e.g. `.mean(axis=1)`) UNLESS the user explicitly asks to calculate a metric across multiple columns for each individual row.
+8) CRITICAL: Avoid duplicate column names! Ensure your final DataFrame `result` does not contain two columns with the same name.

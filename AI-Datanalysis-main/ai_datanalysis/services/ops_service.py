@@ -1,0 +1,278 @@
+"""
+Operational services: logging, rate limiting, metrics, audit, and maintenance.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
+from typing import Any
+
+from sqlalchemy import Engine, text
+
+from ai_datanalysis.paths import CACHE_DIR, LOGS_DIR
+
+
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# In-process lock to prevent TOCTOU race in rate limiting
+_rate_limit_lock = threading.Lock()
+
+DEFAULT_LOGIN_LIMIT = int(os.getenv("LOGIN_RATE_LIMIT", "5"))
+DEFAULT_LOGIN_WINDOW_S = int(os.getenv("LOGIN_RATE_WINDOW_S", "300"))
+DEFAULT_QUERY_LIMIT = int(os.getenv("QUERY_RATE_LIMIT", "30"))
+DEFAULT_QUERY_WINDOW_S = int(os.getenv("QUERY_RATE_WINDOW_S", "60"))
+DB_RETENTION_DAYS = int(os.getenv("OPS_DB_RETENTION_DAYS", "30"))
+FILE_RETENTION_DAYS = int(os.getenv("OPS_FILE_RETENTION_DAYS", "14"))
+
+
+def configure_logging() -> logging.Logger:
+    logger = logging.getLogger("ai_datanalysis")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(os.getenv("APP_LOG_LEVEL", "INFO").upper())
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler = RotatingFileHandler(
+        LOGS_DIR / "app.log",
+        maxBytes=2 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    logger.propagate = False
+    return logger
+
+
+def init_ops_db(engine: Engine) -> None:
+    ddl_rate_limit = """
+    CREATE TABLE IF NOT EXISTS rate_limit_events (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      action_key VARCHAR(64) NOT NULL,
+      scope_key VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_rate_limit_scope_action_time (scope_key, action_key, created_at),
+      KEY idx_rate_limit_time (created_at)
+    ) ENGINE=InnoDB;
+    """
+
+    ddl_query_audit = """
+    CREATE TABLE IF NOT EXISTS query_audit (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      username VARCHAR(50) NOT NULL,
+      raw_query TEXT NOT NULL,
+      normalized_query TEXT NOT NULL,
+      success TINYINT(1) NOT NULL,
+      latency_ms INT NOT NULL,
+      dataset_count INT NOT NULL DEFAULT 0,
+      selected_datasets JSON NULL,
+      llm_provider VARCHAR(50) NULL,
+      llm_model VARCHAR(100) NULL,
+      error_text TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_query_audit_user_time (username, created_at),
+      KEY idx_query_audit_time (created_at)
+    ) ENGINE=InnoDB;
+    """
+
+    ddl_app_metrics = """
+    CREATE TABLE IF NOT EXISTS app_metrics (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      metric_name VARCHAR(100) NOT NULL,
+      metric_value DOUBLE NOT NULL,
+      dimensions JSON NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_app_metrics_name_time (metric_name, created_at),
+      KEY idx_app_metrics_time (created_at)
+    ) ENGINE=InnoDB;
+    """
+
+    with engine.begin() as conn:
+        conn.execute(text(ddl_rate_limit))
+        conn.execute(text(ddl_query_audit))
+        conn.execute(text(ddl_app_metrics))
+
+
+def consume_rate_limit(
+    engine: Engine,
+    action_key: str,
+    scope_key: str,
+    limit: int,
+    window_seconds: int,
+) -> bool:
+    scope = (scope_key or "anonymous").strip().lower()
+    # Use in-process lock to prevent TOCTOU race between concurrent Streamlit threads
+    with _rate_limit_lock:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=int(window_seconds))
+        with engine.begin() as conn:
+            count = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM rate_limit_events
+                    WHERE action_key = :action_key
+                      AND scope_key = :scope_key
+                      AND created_at >= :cutoff
+                    """
+                ),
+                {
+                    "action_key": action_key,
+                    "scope_key": scope,
+                    "cutoff": cutoff,
+                },
+            ).scalar_one()
+
+            if int(count) >= int(limit):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO rate_limit_events(action_key, scope_key)
+                        VALUES (:action_key, :scope_key)
+                        """
+                    ),
+                    {"action_key": f"{action_key}_blocked", "scope_key": scope},
+                )
+                return False
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO rate_limit_events(action_key, scope_key)
+                    VALUES (:action_key, :scope_key)
+                    """
+                ),
+                {"action_key": action_key, "scope_key": scope},
+            )
+    return True
+
+
+def audit_query(
+    engine: Engine,
+    *,
+    username: str,
+    raw_query: str,
+    normalized_query: str,
+    success: bool,
+    latency_ms: int,
+    dataset_count: int,
+    selected_datasets: list[str],
+    llm_provider: str | None,
+    llm_model: str | None,
+    error_text: str | None = None,
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO query_audit(
+                    username, raw_query, normalized_query, success, latency_ms,
+                    dataset_count, selected_datasets, llm_provider, llm_model, error_text
+                ) VALUES (
+                    :username, :raw_query, :normalized_query, :success, :latency_ms,
+                    :dataset_count, :selected_datasets, :llm_provider, :llm_model, :error_text
+                )
+                """
+            ),
+            {
+                "username": (username or "anonymous").strip().lower(),
+                "raw_query": raw_query,
+                "normalized_query": normalized_query,
+                "success": 1 if success else 0,
+                "latency_ms": int(latency_ms),
+                "dataset_count": int(dataset_count),
+                "selected_datasets": json.dumps(selected_datasets, ensure_ascii=False),
+                "llm_provider": llm_provider,
+                "llm_model": llm_model,
+                "error_text": error_text,
+            },
+        )
+
+
+def record_metric(engine: Engine, metric_name: str, metric_value: float, dimensions: dict[str, Any] | None = None) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO app_metrics(metric_name, metric_value, dimensions)
+                VALUES (:metric_name, :metric_value, :dimensions)
+                """
+            ),
+            {
+                "metric_name": metric_name,
+                "metric_value": float(metric_value),
+                "dimensions": json.dumps(dimensions or {}, ensure_ascii=False),
+            },
+        )
+
+
+def cleanup_ops_records(engine: Engine) -> None:
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DB_RETENTION_DAYS)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM rate_limit_events
+                WHERE created_at < :cutoff
+                """
+            ),
+            {"cutoff": cutoff},
+        )
+        conn.execute(
+            text(
+                """
+                DELETE FROM query_audit
+                WHERE created_at < :cutoff
+                """
+            ),
+            {"cutoff": cutoff},
+        )
+        conn.execute(
+            text(
+                """
+                DELETE FROM app_metrics
+                WHERE created_at < :cutoff
+                """
+            ),
+            {"cutoff": cutoff},
+        )
+
+
+def cleanup_old_files() -> None:
+    retention_seconds = FILE_RETENTION_DAYS * 24 * 60 * 60
+    now = time.time()
+    # CHAT_HISTORY_DIR excluded intentionally: user chat data must not be auto-deleted
+    roots = [CACHE_DIR]
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            age = now - path.stat().st_mtime
+            if age > retention_seconds:
+                try:
+                    path.unlink()
+                except Exception:
+                    continue
+
+
+def run_maintenance(engine: Engine) -> None:
+    cleanup_ops_records(engine)
+    cleanup_old_files()

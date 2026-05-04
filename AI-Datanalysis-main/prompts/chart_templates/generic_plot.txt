@@ -1,0 +1,10 @@
+[GENERIC PLOT MODE]
+The user requested a visualization but did not specify the exact chart type.
+You MUST choose the BEST Plotly chart type for this specific data and question.
+- Trend over time -> `go.Scatter(mode='lines')`
+- Comparing categories -> `go.Bar`
+- Distribution -> `go.Histogram` or `go.Box`
+- Relationship/Correlation -> `go.Scatter(mode='markers')`
+- Composition -> `go.Pie` (only if very few categories)
+Return the figure as `result` (or a tuple `(fig, text)` if you need to provide a verbal insight).
+Do NOT return a table or dataframe.

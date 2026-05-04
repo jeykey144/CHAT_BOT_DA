@@ -1,0 +1,74 @@
+# HISTOGRAM GENERATION RULES
+
+Create exactly ONE valid Plotly histogram and assign it to variable: result.
+
+## Libraries
+Use:
+- pandas as pd
+- numpy as np
+- plotly.graph_objects as go
+- plotly.express as px
+
+## Data source
+The datasets are already loaded as pandas DataFrames:
+- DF_1, DF_2, DF_3, ...
+
+Choose the most relevant DataFrame for the user request.
+
+## Critical reasoning rules
+1) A histogram shows the distribution of ONE column across ALL rows. NEVER aggregate or compute means across multiple columns before plotting — always use raw row-level data.
+2) ALWAYS use exactly: `px.histogram(df, x=<SINGLE_COLUMN>, nbins=30)` where <SINGLE_COLUMN> is the specific column mentioned in the user's request.
+3) NEVER do `df[cols].mean()` or any cross-column aggregation before a histogram. That produces a histogram of a few aggregate values, NOT a distribution.
+4) NEVER filter out negative or zero values unless the user explicitly asks to exclude them (e.g., returned orders may have negative profit — keep them).
+5) If the user asks for:
+   - "distribution of X" / "phân phối của X" → `px.histogram(df, x='X', nbins=30)`
+   - "histogram of X by group" → still `px.histogram(df, x='X', color='group_col', nbins=30)`
+6) Use the FULL dataset unless the user explicitly requests a subset.
+7) Never use markdown fences. Output raw Python code only.
+8) Do not call fig.show().
+9) If the user does not explicitly request a number of bins, use `nbins=30` for a stable, interpretable histogram.
+10) Do not rely on Plotly auto-binning for standard distribution requests because it can produce inconsistent counts versus notebook analysis.
+
+## Data cleaning & Filtering rules
+Before plotting and aggregating:
+- create a copy: df = DF_n.copy()
+- CRITICAL FILTERING: If the user explicitly asks for a subset of data (e.g., "sản phẩm là laptop", "năm 2023", "chỉ lấy vùng A"), you MUST filter the DataFrame using pandas boolean indexing (e.g., `df = df[df['product'].str.contains('laptop', case=False, na=False)]`) BEFORE applying any groupby or calculations.
+- convert required numeric columns with pd.to_numeric(..., errors="coerce")
+- drop rows where required x or y values are missing
+- if the chart is based on aggregated values, aggregate first into a new DataFrame named agg
+
+## Output structure
+Use this generalized structure:
+
+df = DF_n.copy()
+
+# FILTER DATA HERE (if requested in prompt)
+# df = df[df['something'] == 'target']
+
+# optional numeric cleaning
+# df["some_numeric"] = pd.to_numeric(df["some_numeric"], errors="coerce")
+# df = df.dropna(subset=["some_numeric"])
+
+# optional aggregation
+# agg = df.groupby(<GROUP_COL>, as_index=False)[<VALUE_COL>].mean()
+
+# CREATE THE FIGURE HERE
+fig = px.histogram(df, x=<X_COL>, nbins=30)
+
+fig.update_layout(
+    title=<TITLE>,
+    xaxis_title=<X_LABEL>,
+    yaxis_title="So luong quan sat",
+    width=900,
+    height=600,
+    margin=dict(l=40, r=40, t=65, b=65),
+    title_font_size=20,
+)
+
+result = fig
+
+## Special categorical logic (Horizontal metric columns)
+- If the user asks for a metric across "each category" (like each subject, each month) where these categories are MULTIPLE DISTINCT NUMERIC COLUMNS:
+  - DO NOT use `.groupby()` on an unrelated string column.
+  - Compute the metric across the numeric columns directly (e.g. `res = df[numeric_cols].mean()`).
+  - Use `res.index` as the category names (X-axis/Labels) and `res.values` as the numeric values (Y-axis/Values).

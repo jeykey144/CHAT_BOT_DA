@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+
+.env
+
+data/runtime/cache/
+data/runtime/chat_history/
+data/runtime/logs/
+data/runtime/uploads/
+
+.DS_Store
+Thumbs.db

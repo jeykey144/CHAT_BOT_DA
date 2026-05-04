@@ -1,0 +1,156 @@
+/* AI-Datanalysis — ChatGPT-like dark UI for Streamlit */
+
+/* ====== Theme base ====== */
+:root{
+  --bg0: #071019;
+  --bg1: #0b1220;
+  --panel: rgba(255,255,255,0.04);
+  --panel2: rgba(255,255,255,0.06);
+  --border: rgba(255,255,255,0.10);
+  --text: rgba(255,255,255,0.92);
+  --muted: rgba(255,255,255,0.66);
+  --accent: #7c3aed; /* violet */
+}
+
+html, body{
+  background: var(--bg1);
+  color: var(--text);
+}
+
+/* App background */
+[data-testid="stAppViewContainer"]{
+  background: radial-gradient(1200px 600px at 10% 0%, rgba(124,58,237,0.18), transparent 60%),
+              radial-gradient(900px 500px at 90% 0%, rgba(59,130,246,0.14), transparent 55%),
+              linear-gradient(180deg, var(--bg0), var(--bg1));
+}
+
+/* Sidebar */
+[data-testid="stSidebar"]{
+  background: rgba(6,12,20,0.92);
+  border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] *{
+  color: var(--text);
+}
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"]{
+  padding-top: 0.75rem;
+}
+
+/* Header + sidebar controls */
+[data-testid="stHeader"]{
+  background: rgba(7,16,25,0.32);
+  backdrop-filter: blur(10px);
+}
+[data-testid="stToolbar"]{
+  visibility: visible;
+  height: auto;
+}
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapseButton"]{
+  z-index: 1000;
+}
+[data-testid="stExpandSidebarButton"] button,
+[data-testid="stSidebarCollapseButton"] button,
+button[data-testid="stExpandSidebarButton"],
+button[data-testid="stSidebarCollapseButton"]{
+  border-radius: 12px !important;
+  border: 1px solid var(--border) !important;
+  background: rgba(11,18,32,0.92) !important;
+  color: var(--text) !important;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.28);
+}
+[data-testid="stExpandSidebarButton"] button:hover,
+[data-testid="stSidebarCollapseButton"] button:hover,
+button[data-testid="stExpandSidebarButton"]:hover,
+button[data-testid="stSidebarCollapseButton"]:hover{
+  border-color: rgba(124,58,237,0.55) !important;
+  background: rgba(19,28,44,0.96) !important;
+}
+[data-testid="stExpandSidebarButton"]{
+  position: fixed;
+  top: 0.8rem;
+  left: 0.8rem;
+}
+
+/* Main container width */
+section.main > div.block-container{
+  max-width: 980px;
+  padding-top: 1.5rem;
+  padding-bottom: 6rem; /* leave space for chat input */
+}
+
+/* Title block */
+.app-title{
+  margin: 0 0 1rem 0;
+  padding: 0.25rem 0;
+}
+.app-title__name{
+  font-size: 1.85rem;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+.app-title__desc{
+  margin-top: 0.25rem;
+  color: var(--muted);
+}
+
+/* Buttons */
+.stButton > button{
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.stButton > button:hover{
+  border-color: rgba(124,58,237,0.55);
+  background: var(--panel2);
+}
+
+/* Expander */
+[data-testid="stExpander"]{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+/* Chat messages */
+[data-testid="stChatMessage"]{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+/* Chat input */
+[data-testid="stChatInput"]{
+  border-radius: 14px;
+}
+[data-testid="stChatInput"] textarea{
+  background: rgba(255,255,255,0.04) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 14px !important;
+}
+[data-testid="stChatInput"] textarea:focus{
+  border-color: rgba(124,58,237,0.65) !important;
+  box-shadow: 0 0 0 3px rgba(124,58,237,0.20) !important;
+}
+
+/* Dataframe */
+[data-testid="stDataFrame"]{
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+/* Sidebar radios + metrics */
+[data-testid="stSidebar"] [role="radiogroup"]{
+  gap: 0.35rem;
+}
+[data-testid="stSidebar"] [data-testid="stMetric"]{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem;
+}
