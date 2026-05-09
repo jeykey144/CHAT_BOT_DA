@@ -3,13 +3,13 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import pandas as pd
 from langchain_core.messages import HumanMessage
 
 from ai_datanalysis.core.cache import cache
 from ai_datanalysis.core.data_catalog import prepare_analysis_bundle
-from ai_datanalysis.core.executors import ExecOutcome, build_executor
+from ai_datanalysis.core.executors import ExecOutcome
 from ai_datanalysis.core.fast_path import try_fast_path
 from ai_datanalysis.core.join_planner import query_suggests_join
 from ai_datanalysis.core.prompt_builder import build_prompt
@@ -31,15 +31,18 @@ class DataAnalysisAgent:
 
     @staticmethod
     def _extract_code(text: str) -> str:
-        if not text: return ""
+        if not text:
+            return ""
         text = str(text).strip()
         # Strip DeepSeek R1 chain-of-thought thinking blocks (<think>...</think>)
         # These can be thousands of tokens and must be removed before code extraction.
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         m = re.search(r"```python\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
-        if m: return m.group(1).strip()
+        if m:
+            return m.group(1).strip()
         m = re.search(r"```\s*(.*?)```", text, flags=re.DOTALL)
-        if m: return m.group(1).strip()
+        if m:
+            return m.group(1).strip()
         text = re.sub(r"^```python\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"^```\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -125,7 +128,8 @@ class DataAnalysisAgent:
             if wrong_col:
                 # Sometimes KeyError includes exact string rep like: "['Wrong'] not in index"
                 m = re.search(r"^\['(.*)'\] not in index", wrong_col)
-                if m: wrong_col = m.group(1)
+                if m:
+                    wrong_col = m.group(1)
                 
                 all_cols = []
                 for df in data.values():
@@ -195,7 +199,6 @@ class DataAnalysisAgent:
         selected_data = select_datasets(norm_q, data, max_datasets=max_datasets)
         self.selected_dataset_names = list(selected_data.keys())
         analysis_data, _catalog, analysis_context = prepare_analysis_bundle(query, selected_data)
-        dfs_list = list(analysis_data.values())
 
         # Step 3: Fast-path (Rule-based execution)
         if not router_out.is_follow_up and router_out.graph_type in {"table", "auto_profile", "pie_plot", "histogram_plot"}:

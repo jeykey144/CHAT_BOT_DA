@@ -6,7 +6,6 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta
 from functools import lru_cache
-from pathlib import Path
 from typing import Mapping, MutableMapping, Optional, Tuple
 from urllib.parse import unquote
 

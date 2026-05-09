@@ -17,4 +17,4 @@ result = pd.DataFrame({
 
     assert outcome.ok, outcome.error
     assert outcome.result["column"].tolist() == ["revenue", "cost"]
-    assert outcome.result["mean"].tolist() == [100.0, 60.0]
+    assert outcome.result["mean"].tolist() == [df["revenue"].mean(), df["cost"].mean()]

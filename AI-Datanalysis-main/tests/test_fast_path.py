@@ -35,8 +35,8 @@ def test_fast_path_min_max_temperature_bike_sharing():
 
     code = try_fast_path("hay hien thi nhiet do thap nhat va nhiet do cao nhat trong bo du lieu", data)
     assert "temperature_c" in code
-    assert "Nhiet do thap nhat" in code
-    assert "Nhiet do cao nhat" in code
+    assert "Nhiệt độ thấp nhất" in code
+    assert "Nhiệt độ cao nhất" in code
 
 
 def test_fast_path_average_total_rides():

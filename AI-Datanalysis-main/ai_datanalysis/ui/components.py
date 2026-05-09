@@ -60,7 +60,6 @@ def reset_data_upload():
 
 
 def _logout(auth_engine):
-    user = st.session_state.get("user")
     token = st.session_state.get("session_token") or st.query_params.get("session")
     if token:
         try:

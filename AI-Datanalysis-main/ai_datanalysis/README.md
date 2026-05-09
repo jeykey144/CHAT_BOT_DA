@@ -214,7 +214,7 @@ Xem đầy đủ trong [../.env.example](../.env.example) và [../README.md](../
 **Biến quan trọng nhất:**
 
 ```env
-AUTH_DB_URL=mysql+pymysql://user:pass@host:3306/dbname
+AUTH_DB_URL=mysql+pymysql://root:<password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot_auth?charset=utf8mb4
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_...
 COOKIE_SECRET=<hex 32 bytes>

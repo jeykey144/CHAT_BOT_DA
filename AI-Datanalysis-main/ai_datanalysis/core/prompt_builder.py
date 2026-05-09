@@ -4,7 +4,7 @@ Replaces the old verbose prompt building logic.
 Uses semantic column categorization to save tokens and improve LLM understanding.
 """
 import re as _re
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 
