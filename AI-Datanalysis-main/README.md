@@ -134,7 +134,7 @@ cp .env.example .env
 Các biến **bắt buộc**:
 
 ```env
-AUTH_DB_URL=mysql+pymysql://root:<password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot_auth?charset=utf8mb4
+AUTH_DB_URL=mysql+pymysql://root:<password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/<database_name>?charset=utf8mb4
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_...
 ```
