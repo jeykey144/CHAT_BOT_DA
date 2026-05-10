@@ -5,6 +5,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     POETRY_VERSION=1.8.5 \
     POETRY_VIRTUALENVS_CREATE=false \
+    HOME=/home/appuser \
+    XDG_CACHE_HOME=/home/appuser/.cache \
+    MPLCONFIGDIR=/home/appuser/.cache/matplotlib \
     PORT=8501 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
@@ -30,13 +33,16 @@ COPY AI-Datanalysis-main/assets ./assets
 COPY AI-Datanalysis-main/data ./data
 COPY AI-Datanalysis-main/prompts ./prompts
 
-RUN mkdir -p \
+RUN useradd -m -u 1000 appuser \
+    && mkdir -p \
+    /home/appuser/.cache/matplotlib \
+    /home/appuser/.streamlit \
     data/runtime/uploads \
     data/runtime/chat_history \
     data/runtime/logs \
     data/runtime/cache/code \
     data/runtime/cache/results \
-    && useradd -m -u 1000 appuser \
+    && chown -R appuser:appuser /home/appuser \
     && chown -R appuser:appuser /app
 
 USER appuser
