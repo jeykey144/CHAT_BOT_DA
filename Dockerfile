@@ -1,9 +1,11 @@
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     POETRY_VERSION=1.8.5 \
     POETRY_VIRTUALENVS_CREATE=false \
+    PORT=8501 \
     STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
@@ -11,7 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential curl socat \
     && rm -rf /var/lib/apt/lists/*
 
 COPY AI-Datanalysis-main/pyproject.toml AI-Datanalysis-main/poetry.lock ./
@@ -39,6 +41,9 @@ RUN mkdir -p \
 
 USER appuser
 
-EXPOSE 8501
+EXPOSE 8501 8080
 
-CMD ["sh", "-c", "streamlit run app.py --server.address=0.0.0.0 --server.port=${PORT:-8501}"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl --fail http://127.0.0.1:8501/_stcore/health || exit 1
+
+CMD ["sh", "-c", "streamlit run app.py --server.address=0.0.0.0 --server.port=8501 & app_pid=$!; if [ \"${PORT:-8501}\" != \"8501\" ]; then socat TCP-LISTEN:${PORT},fork,reuseaddr TCP:127.0.0.1:8501 & fi; if [ \"${PORT:-8501}\" != \"8080\" ]; then socat TCP-LISTEN:8080,fork,reuseaddr TCP:127.0.0.1:8501 & fi; wait \"$app_pid\""]
