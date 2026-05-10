@@ -50,6 +50,6 @@ USER appuser
 EXPOSE 8501 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl --fail http://127.0.0.1:8501/_stcore/health || exit 1
+    CMD curl --fail "http://127.0.0.1:${PORT:-8501}/_stcore/health" || curl --fail http://127.0.0.1:8501/_stcore/health || exit 1
 
 CMD ["sh", "-c", "APP_PORT=\"${PORT:-8501}\"; streamlit run app.py --server.address=0.0.0.0 --server.port=\"$APP_PORT\" & app_pid=$!; if [ \"$APP_PORT\" != \"8501\" ]; then socat TCP-LISTEN:8501,fork,reuseaddr TCP:127.0.0.1:\"$APP_PORT\" & fi; if [ \"$APP_PORT\" != \"8080\" ]; then socat TCP-LISTEN:8080,fork,reuseaddr TCP:127.0.0.1:\"$APP_PORT\" & fi; wait \"$app_pid\""]

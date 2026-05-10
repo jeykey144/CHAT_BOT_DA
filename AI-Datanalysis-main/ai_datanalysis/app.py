@@ -67,12 +67,14 @@ def get_auth_engine():
     auth_db_url = os.getenv("AUTH_DB_URL", "").strip()
     if not auth_db_url:
         raise RuntimeError("Missing AUTH_DB_URL env var.")
+    connect_timeout_s = int(os.getenv("DB_CONNECT_TIMEOUT_S", "10"))
+    pool_timeout_s = int(os.getenv("DB_POOL_TIMEOUT_S", "10"))
     return create_engine(
         auth_db_url,
         pool_pre_ping=True,
         pool_recycle=1800,
-        pool_timeout=10,
-        connect_args={"connect_timeout": 10},
+        pool_timeout=pool_timeout_s,
+        connect_args={"connect_timeout": connect_timeout_s},
         future=True,
     )
 
@@ -279,6 +281,36 @@ def _render_sidebar_toggle_bridge() -> None:
     return
 
 
+def _render_startup_error(title: str, detail: str, ex: Exception, hints: list[str]) -> None:
+    st.error(title)
+    st.caption(detail)
+    for hint in hints:
+        st.markdown(f"- {hint}")
+    with st.expander("Deployment error detail", expanded=True):
+        st.code(str(ex), language="text")
+
+
+def _render_database_startup_error(ex: Exception) -> None:
+    raw = str(ex).lower()
+    hints = [
+        "Verify AUTH_DB_URL is set on the deployment platform and points to the existing database name.",
+        "For this RDS instance, local checks found the existing database name is `chatbot`, not `chatbot_auth`.",
+        "Allow outbound traffic from the deployment platform to the RDS security group on TCP port 3306.",
+        "If RDS is outside the deployment network, it must be publicly reachable or connected through a private network/VPC tunnel.",
+    ]
+    if "timed out" in raw or "(2003" in raw:
+        hints.insert(0, "The app can resolve the RDS host, but the network path to MySQL port 3306 is timing out.")
+    elif "unknown database" in raw:
+        hints.insert(0, "The MySQL host is reachable, but AUTH_DB_URL uses a database name that does not exist.")
+
+    _render_startup_error(
+        "Database is not reachable",
+        "The Streamlit service started, but authentication and app storage cannot initialize until MySQL is reachable.",
+        ex,
+        hints,
+    )
+
+
 def main():
     st.set_page_config(page_title="AI-Datanalysis", layout="wide", initial_sidebar_state="expanded")
     process_styles()
@@ -305,14 +337,32 @@ def main():
     st.session_state.setdefault("sample_var", 0)
     st.session_state.setdefault("dashboard_role", "analyst")
 
-    cookie_manager = st.session_state.get("_cookie_manager")
-    if cookie_manager is None:
-        cookie_manager = _get_cookie_manager()
-        st.session_state["_cookie_manager"] = cookie_manager
+    try:
+        cookie_manager = st.session_state.get("_cookie_manager")
+        if cookie_manager is None:
+            cookie_manager = _get_cookie_manager()
+            st.session_state["_cookie_manager"] = cookie_manager
+    except Exception as ex:
+        logger.exception("cookie_manager_init_failed")
+        _render_startup_error(
+            "Session configuration error",
+            "The app cannot initialize browser sessions with the current environment variables.",
+            ex,
+            [
+                "Set COOKIE_SECRET on the deployment platform.",
+                "Use a long random value, for example 32 random bytes encoded as hex.",
+            ],
+        )
+        return
 
     # Engine and DB init are cached — run at most once per app instance
-    auth_engine = get_auth_engine()
-    _init_databases()
+    try:
+        auth_engine = get_auth_engine()
+        _init_databases()
+    except Exception as ex:
+        logger.exception("database_init_failed")
+        _render_database_startup_error(ex)
+        return
 
     _sync_user_session(auth_engine, cookie_manager)
 

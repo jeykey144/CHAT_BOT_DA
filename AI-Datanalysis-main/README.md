@@ -159,6 +159,10 @@ poetry run streamlit run app.py
 
 Truy cập: `http://localhost:8501`
 
+### Deploy TOSE + AWS RDS
+
+Khi deploy len TOSE, can set env tren TOSE va mo RDS security group cho outbound IP cua TOSE. Xem checklist: [docs/DEPLOY_TOSE.md](docs/DEPLOY_TOSE.md).
+
 ---
 
 ## Cấu hình LLM Provider
