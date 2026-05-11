@@ -43,6 +43,14 @@ ID_LIKE_TOKENS = GENERIC_KEY_TOKENS.union(
 )
 MASTER_TABLE_CONFIDENCE = 0.78
 MIN_RELATIONSHIP_CONFIDENCE = 0.55
+NON_KEY_JOIN_NAMES = {
+    "title",
+    "subject",
+    "difficulty_level",
+    "description",
+    "tags",
+    "content_type",
+}
 COMBINED_VIEW_KEYWORDS = (
     "dashboard",
     "bao cao",
@@ -70,6 +78,10 @@ def _tokenize_name(name: str) -> list[str]:
 
 def _meaningful_tokens(name: str) -> set[str]:
     return {token for token in _tokenize_name(name) if token not in GENERIC_KEY_TOKENS}
+
+
+def _is_non_key_join_name(name: str) -> bool:
+    return _normalize_name(name) in NON_KEY_JOIN_NAMES
 
 
 def _is_id_like_column(name: str) -> bool:
@@ -232,6 +244,8 @@ def _relationship_candidates(
 
             matched, exact_name = _column_name_match(left_col_name, right_col_name)
             if not matched:
+                continue
+            if exact_name and _is_non_key_join_name(left_col_name):
                 continue
             if not (left_id_like or right_id_like or left_col_name in left_keyish or right_col_name in right_keyish):
                 continue

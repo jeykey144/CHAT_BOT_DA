@@ -57,6 +57,69 @@ FINANCE_METRIC_ALIASES = {
 
 TARGET_TOKENS = ["target", "plan", "budget", "forecast", "benchmark"]
 
+TIME_NAME_HINTS = (
+    "timestamp",
+    "date",
+    "datetime",
+    "created_at",
+    "updated_at",
+    "submitted_at",
+    "completed_at",
+    "started_at",
+    "recorded_at",
+    "event_time",
+    "event_date",
+)
+
+TIME_DURATION_HINTS = (
+    "time_spent",
+    "duration",
+    "elapsed",
+    "latency",
+    "delay",
+    "waiting",
+    "wait_time",
+    "time_on",
+    "minutes",
+    "minute",
+    "seconds",
+    "second",
+    "hours",
+    "hour",
+)
+
+OUTCOME_METRIC_HINTS = (
+    "score",
+    "grade",
+    "result",
+    "outcome",
+    "rate",
+    "ratio",
+    "pct",
+    "percent",
+    "conversion",
+    "revenue",
+    "sales",
+    "profit",
+    "margin",
+)
+
+EXPLANATORY_METRIC_HINTS = (
+    "duration",
+    "time_spent",
+    "spent",
+    "minutes",
+    "minute",
+    "seconds",
+    "second",
+    "hours",
+    "hour",
+    "age",
+    "quantity",
+    "price",
+    "cost",
+)
+
 FINANCE_DIMENSION_HINTS = [
     "region",
     "area",
@@ -96,6 +159,10 @@ class SchemaProfile:
     numeric_cols: list[str]
     categorical_cols: list[str]
     id_cols: list[str]
+    string_cols: list[str]
+    column_types: dict[str, str]
+    datetime_invalid_counts: dict[str, int]
+    warnings: list[str]
 
 
 def _normalize_name(name: str) -> str:
@@ -112,8 +179,109 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     return float(numerator) / float(denominator)
 
 
-def _coerce_datetime(series: pd.Series) -> pd.Series:
+def _empty_datetime_series(series: pd.Series) -> pd.Series:
+    return pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+
+def _is_duration_like_time_name(col_norm: str) -> bool:
+    return any(token in col_norm for token in TIME_DURATION_HINTS)
+
+
+def _is_epoch_like_name(col_norm: str) -> bool:
+    return "timestamp" in col_norm or "epoch" in col_norm or col_norm.endswith("_ts")
+
+
+def _coerce_datetime(series: pd.Series, col_name: str = "") -> pd.Series:
+    col_norm = _normalize_name(col_name)
+
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")
+
+    if _is_duration_like_time_name(col_norm):
+        return _empty_datetime_series(series)
+
+    clean = series.dropna()
+    if clean.empty:
+        return _empty_datetime_series(series)
+
+    if pd.api.types.is_numeric_dtype(clean):
+        numeric = pd.to_numeric(series, errors="coerce")
+        non_null = numeric.dropna()
+        if non_null.empty:
+            return _empty_datetime_series(series)
+
+        if "year" in col_norm:
+            years = non_null.astype(float)
+            if years.between(1900, 2100).mean() >= 0.8:
+                return pd.to_datetime(numeric.astype("Int64").astype(str), format="%Y", errors="coerce")
+
+        if _is_epoch_like_name(col_norm):
+            median_abs = float(non_null.abs().median())
+            if median_abs >= 1e17:
+                return pd.to_datetime(numeric, unit="ns", errors="coerce")
+            if median_abs >= 1e14:
+                return pd.to_datetime(numeric, unit="us", errors="coerce")
+            if median_abs >= 1e11:
+                return pd.to_datetime(numeric, unit="ms", errors="coerce")
+            if median_abs >= 1e8:
+                return pd.to_datetime(numeric, unit="s", errors="coerce")
+
+        return _empty_datetime_series(series)
+
     return pd.to_datetime(series, errors="coerce")
+
+
+def _datetime_candidate_score(series: pd.Series, col_name: str) -> float:
+    col_norm = _normalize_name(col_name)
+    if _is_duration_like_time_name(col_norm):
+        return -1.0
+
+    parsed = _coerce_datetime(series, col_name)
+    valid_count = int(parsed.notna().sum())
+    if valid_count < max(3, len(series) // 5):
+        return -1.0
+
+    clean = parsed.dropna()
+    if clean.empty:
+        return -1.0
+
+    normalized_days = clean.dt.normalize()
+    unique_days = int(normalized_days.nunique())
+    span_days = max(int((clean.max() - clean.min()).days), 0)
+
+    score = float(valid_count)
+    if any(token in col_norm for token in TIME_NAME_HINTS):
+        score += 100.0
+    if col_norm in {"time", "date", "timestamp", "datetime"}:
+        score += 40.0
+    if unique_days > 1:
+        score += 20.0 + min(unique_days, 30)
+    if span_days > 0:
+        score += min(span_days, 60)
+    if pd.api.types.is_numeric_dtype(series) and not _is_epoch_like_name(col_norm) and "year" not in col_norm:
+        score -= 100.0
+    return score
+
+
+def _non_null_count(series: pd.Series) -> int:
+    return int(series.notna().sum())
+
+
+def _numeric_parse_ratio(series: pd.Series) -> float:
+    non_null = _non_null_count(series)
+    if not non_null:
+        return 0.0
+    parsed = pd.to_numeric(series, errors="coerce")
+    return _safe_ratio(int(parsed.notna().sum()), non_null)
+
+
+def _is_categorical_series(series: pd.Series) -> bool:
+    non_null = _non_null_count(series)
+    if not non_null:
+        return True
+    nunique = int(series.nunique(dropna=True))
+    unique_ratio = _safe_ratio(nunique, non_null)
+    return nunique <= 30 or unique_ratio <= 0.5
 
 
 def _contains_any(name: str, tokens: list[str] | set[str] | tuple[str, ...]) -> bool:
@@ -142,6 +310,10 @@ def _detect_schema(df: pd.DataFrame) -> SchemaProfile:
     numeric_cols: list[str] = []
     categorical_cols: list[str] = []
     id_cols: list[str] = []
+    string_cols: list[str] = []
+    column_types: dict[str, str] = {}
+    datetime_invalid_counts: dict[str, int] = {}
+    warnings: list[str] = []
 
     for col in df.columns:
         col_name = str(col)
@@ -150,29 +322,71 @@ def _detect_schema(df: pd.DataFrame) -> SchemaProfile:
 
         if pd.api.types.is_datetime64_any_dtype(series):
             time_cols.append(col_name)
+            column_types[col_name] = "datetime"
             continue
 
-        if any(token in col_norm for token in ("date", "time", "month", "year", "day", "week")):
-            parsed = _coerce_datetime(series)
-            if parsed.notna().sum() >= max(3, len(df) // 5):
+        if any(token in col_norm for token in ("date", "time", "timestamp", "month", "year", "day", "week")):
+            parsed = _coerce_datetime(series, col_name)
+            valid_count = int(parsed.notna().sum())
+            non_null_count = _non_null_count(series)
+            invalid_count = max(non_null_count - valid_count, 0)
+            if valid_count >= max(3, len(df) // 5) and not _is_duration_like_time_name(col_norm):
                 time_cols.append(col_name)
+                column_types[col_name] = "datetime"
+                if invalid_count:
+                    datetime_invalid_counts[col_name] = invalid_count
+                    warnings.append(f"Column '{col_name}' has {invalid_count} rows that could not be parsed as datetime and were ignored in time charts.")
                 continue
 
         if _is_identifier_series(series, col_norm):
             id_cols.append(col_name)
+            column_types[col_name] = "id"
             continue
 
-        if pd.api.types.is_numeric_dtype(series):
+        if pd.api.types.is_numeric_dtype(series) or _numeric_parse_ratio(series) >= 0.9:
             numeric_cols.append(col_name)
-        else:
+            column_types[col_name] = "numeric"
+        elif _is_categorical_series(series):
             categorical_cols.append(col_name)
+            column_types[col_name] = "categorical"
+        else:
+            string_cols.append(col_name)
+            column_types[col_name] = "string"
 
     return SchemaProfile(
         time_cols=time_cols,
         numeric_cols=numeric_cols,
         categorical_cols=categorical_cols,
         id_cols=id_cols,
+        string_cols=string_cols,
+        column_types=column_types,
+        datetime_invalid_counts=datetime_invalid_counts,
+        warnings=warnings,
     )
+
+
+def _prepare_dashboard_frame(df: pd.DataFrame, profile: SchemaProfile) -> pd.DataFrame:
+    prepared = df.copy()
+    for col in profile.time_cols:
+        if col in prepared.columns:
+            prepared[col] = _coerce_datetime(prepared[col], col)
+    for col in profile.numeric_cols:
+        if col in prepared.columns:
+            prepared[col] = _safe_numeric(prepared[col])
+    return prepared
+
+
+def _schema_payload(profile: SchemaProfile) -> dict[str, Any]:
+    return {
+        "time_cols": profile.time_cols,
+        "numeric_cols": profile.numeric_cols,
+        "categorical_cols": profile.categorical_cols,
+        "string_cols": profile.string_cols,
+        "id_cols": profile.id_cols,
+        "column_types": profile.column_types,
+        "datetime_invalid_counts": profile.datetime_invalid_counts,
+        "warnings": profile.warnings,
+    }
 
 
 def _detect_domain(columns: list[str]) -> str:
@@ -237,11 +451,16 @@ def _pick_secondary_metrics(
 
 
 def _pick_best_time_col(df: pd.DataFrame, profile: SchemaProfile) -> Optional[str]:
-    for col in profile.time_cols:
-        converted = _coerce_datetime(df[col])
-        if converted.notna().sum() >= max(3, len(df) // 10):
-            return col
-    return None
+    candidates = [
+        (_datetime_candidate_score(df[col], col), col)
+        for col in profile.time_cols
+        if col in df.columns
+    ]
+    candidates = [item for item in candidates if item[0] >= 0]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def _pick_best_category(df: pd.DataFrame, profile: SchemaProfile) -> Optional[str]:
@@ -301,8 +520,10 @@ def _make_line_chart(
     *,
     agg: str = "sum",
     title: Optional[str] = None,
-) -> go.Figure:
+) -> Optional[go.Figure]:
     agg_df, _ = _aggregate_metric_over_time(df, time_col, metric_col, agg)
+    if len(agg_df) < 2:
+        return None
 
     fig = go.Figure(
         data=[
@@ -334,8 +555,11 @@ def _make_bar_chart(
     temp = df[[category_col, metric_col]].copy()
     temp[metric_col] = _safe_numeric(temp[metric_col])
     temp = temp.dropna()
-    agg_df = temp.groupby(category_col, as_index=False)[metric_col].agg(agg)
+    agg_df = temp.groupby(category_col, as_index=False).agg(
+        **{metric_col: (metric_col, agg), "__row_count__": (metric_col, "count")}
+    )
     agg_df = agg_df.sort_values(metric_col, ascending=False).head(10)
+    agg_label = _aggregation_label(agg)
 
     fig = go.Figure(
         data=[
@@ -345,12 +569,13 @@ def _make_bar_chart(
                 marker_color="#ea580c",
                 text=[_format_value(v, metric_name=metric_col) for v in agg_df[metric_col]],
                 textposition="auto",
-                hovertemplate="<b>%{x}</b><br>Gia tri: %{y}<extra></extra>",
+                customdata=agg_df[["__row_count__"]],
+                hovertemplate=f"<b>%{{x}}</b><br>{agg_label}: %{{y}}<br>So ban ghi: %{{customdata[0]}}<extra></extra>",
             )
         ]
     )
     fig.update_xaxes(title=category_col, tickangle=-30)
-    fig.update_yaxes(title=metric_col)
+    fig.update_yaxes(title=f"{agg_label} {metric_col}")
     return _apply_figure_style(fig, title or f"Top đóng góp theo {category_col}")
 
 
@@ -391,13 +616,15 @@ def _make_box_chart(df: pd.DataFrame, metric_col: str, category_col: Optional[st
     return _apply_figure_style(fig, f"Bien dong va outlier cua {metric_col}")
 
 
-def _make_scatter_chart(df: pd.DataFrame, x_col: str, y_col: str, category_col: Optional[str]) -> go.Figure:
+def _make_scatter_chart(df: pd.DataFrame, x_col: str, y_col: str, category_col: Optional[str]) -> Optional[go.Figure]:
     temp = df.copy()
     temp[x_col] = _safe_numeric(temp[x_col])
     temp[y_col] = _safe_numeric(temp[y_col])
     temp = temp.dropna(subset=[x_col, y_col]).head(2000)
+    if len(temp) < 2:
+        return None
     color = category_col if category_col and category_col in temp.columns else None
-    fig = px.scatter(temp, x=x_col, y=y_col, color=color, trendline="ols" if len(temp) >= 20 else None)
+    fig = px.scatter(temp, x=x_col, y=y_col, color=color)
     fig.update_layout(showlegend=bool(color))
     return _apply_figure_style(fig, f"Tương quan {x_col} và {y_col}")
 
@@ -408,14 +635,17 @@ def _make_heatmap(df: pd.DataFrame, numeric_cols: list[str]) -> Optional[go.Figu
     cols = numeric_cols[:6]
     temp = df[cols].apply(pd.to_numeric, errors="coerce")
     corr = temp.corr(numeric_only=True)
-    if corr.empty:
+    if corr.empty or corr.shape[0] < 2:
         return None
+    text_values = corr.round(2).astype(object).where(corr.notna(), "NaN").values
     fig = go.Figure(
         data=[
             go.Heatmap(
                 z=corr.values,
                 x=corr.columns,
                 y=corr.index,
+                text=text_values,
+                texttemplate="%{text}",
                 colorscale="RdBu",
                 zmid=0,
                 hovertemplate="Cột X: %{x}<br>Cột Y: %{y}<br>Tương quan: %{z:.2f}<extra></extra>",
@@ -423,6 +653,23 @@ def _make_heatmap(df: pd.DataFrame, numeric_cols: list[str]) -> Optional[go.Figu
         ]
     )
     return _apply_figure_style(fig, "Bản đồ tương quan các chỉ số", height=380)
+
+
+def _heatmap_note(df: pd.DataFrame, numeric_cols: list[str]) -> str:
+    cols = [col for col in numeric_cols[:6] if col in df.columns]
+    if len(cols) < 2:
+        return "Can it nhat hai cot so de tao heatmap tuong quan."
+    temp = df[cols].apply(pd.to_numeric, errors="coerce")
+    reasons: list[str] = []
+    missing = int(temp.isna().sum().sum())
+    if missing:
+        reasons.append(f"{missing} gia tri bi thieu hoac khong chuyen duoc sang so")
+    constant_cols = [col for col in cols if temp[col].dropna().nunique() <= 1]
+    if constant_cols:
+        reasons.append("cot hang so khong co phuong sai: " + ", ".join(constant_cols))
+    if reasons:
+        return "Mot so he so tuong quan co the la NaN do " + "; ".join(reasons) + "."
+    return "Heatmap chi su dung cac cot so va hien thi he so tuong quan Pearson."
 
 
 def _find_matching_column(columns: list[str], positive_tokens: list[str]) -> Optional[str]:
@@ -464,11 +711,74 @@ def _find_target_column(columns: list[str], base_tokens: list[str]) -> Optional[
     return best_col
 
 
+def _classify_dashboard_request(goal: str) -> dict[str, str]:
+    normalized = _normalize_name(goal or "").replace("_", " ")
+    result_type = "dashboard"
+    chart_type = "auto"
+
+    if any(token in normalized for token in ("kpi", "chi so", "tong quan", "nhan xet", "insight", "van ban")):
+        result_type = "kpi_text"
+    if any(token in normalized for token in ("bang", "table", "danh sach", "liet ke")):
+        result_type = "table"
+    if any(token in normalized for token in ("bieu do", "chart", "plot", "ve ", "xu huong", "tuong quan", "phan bo", "ty le")):
+        result_type = "chart"
+
+    chart_keywords = [
+        ("line", ("line", "duong", "xu huong", "trend", "thoi gian")),
+        ("bar", ("bar", "cot", "so sanh", "xep hang", "top")),
+        ("scatter", ("scatter", "phan tan", "tuong quan", "quan he")),
+        ("box", ("box", "boxplot", "phan bo theo nhom")),
+        ("heatmap", ("heatmap", "ma tran", "correlation", "corr")),
+        ("pie", ("pie", "donut", "tron", "ty le", "phan tram")),
+    ]
+    for kind, keywords in chart_keywords:
+        if any(keyword in normalized for keyword in keywords):
+            chart_type = kind
+            break
+
+    return {"result_type": result_type, "chart_type": chart_type}
+
+
 def _metric_aggregation(metric_name: str) -> str:
     name = _normalize_name(metric_name)
     if any(token in name for token in ("rate", "ratio", "pct", "percent", "margin", "avg", "mean", "score", "rating", "price")):
         return "mean"
     return "sum"
+
+
+def _aggregation_label(agg: str) -> str:
+    return {"mean": "Trung bình", "sum": "Tổng", "count": "Số lượng"}.get(agg, agg)
+
+
+def _chart_message(title: str, kind: str, message: str) -> dict[str, Any]:
+    return {"title": title, "kind": kind, "figure": None, "message": message}
+
+
+def _is_outcome_metric_name(metric: str) -> bool:
+    name = _normalize_name(metric)
+    return any(token in name for token in OUTCOME_METRIC_HINTS)
+
+
+def _is_explanatory_metric_name(metric: str) -> bool:
+    name = _normalize_name(metric)
+    return any(token in name for token in EXPLANATORY_METRIC_HINTS)
+
+
+def _pick_scatter_pair(primary_metric: Optional[str], secondary_metrics: list[str]) -> tuple[str, str] | None:
+    if not primary_metric or not secondary_metrics:
+        return None
+
+    metrics = [primary_metric] + [metric for metric in secondary_metrics if metric != primary_metric]
+    outcome_candidates = [metric for metric in metrics if _is_outcome_metric_name(metric)]
+    explanatory_candidates = [metric for metric in metrics if _is_explanatory_metric_name(metric)]
+
+    y_col = outcome_candidates[0] if outcome_candidates else primary_metric
+    x_col = next((metric for metric in explanatory_candidates if metric != y_col), None)
+    if x_col is None:
+        x_col = next((metric for metric in metrics if metric != y_col), None)
+    if x_col is None:
+        return None
+    return x_col, y_col
 
 
 def _choose_time_grain(series: pd.Series) -> str:
@@ -504,7 +814,7 @@ def _format_period_label(value: pd.Timestamp, grain: str) -> str:
 
 def _aggregate_metric_over_time(df: pd.DataFrame, time_col: str, metric_col: str, agg: str) -> tuple[pd.DataFrame, str]:
     temp = df[[time_col, metric_col]].copy()
-    temp[time_col] = _coerce_datetime(temp[time_col])
+    temp[time_col] = _coerce_datetime(temp[time_col], time_col)
     temp[metric_col] = _safe_numeric(temp[metric_col])
     temp = temp.dropna()
     if temp.empty:
@@ -543,7 +853,7 @@ def _current_previous_count(
 ) -> dict[str, Any]:
     if time_col:
         temp = df[[time_col]].copy()
-        temp[time_col] = _coerce_datetime(temp[time_col])
+        temp[time_col] = _coerce_datetime(temp[time_col], time_col)
         temp[label] = df[id_col].astype(str) if id_col and id_col in df.columns else 1
         temp = temp.dropna(subset=[time_col])
         if not temp.empty:
@@ -627,15 +937,27 @@ def _pick_binary_metric(df: pd.DataFrame, profile: SchemaProfile) -> Optional[st
     preferred = _find_matching_column(candidates, ["pass", "passed", "completion", "complete", "success", "flag", "status"])
     return preferred or (candidates[0] if candidates else None)
 
-def _quality_summary(df: pd.DataFrame, primary_metric: Optional[str]) -> dict[str, Any]:
+def _quality_summary(df: pd.DataFrame, primary_metric: Optional[str], profile: SchemaProfile | None = None) -> dict[str, Any]:
     missing_cells = int(df.isna().sum().sum())
     total_cells = int(df.shape[0] * max(df.shape[1], 1))
     duplicate_rows = int(df.duplicated().sum())
+    datetime_invalid_counts = dict(profile.datetime_invalid_counts) if profile else {}
+    column_types = dict(profile.column_types) if profile else {}
     quality = {
         "missing_cells": missing_cells,
         "missing_ratio": round(_safe_ratio(missing_cells, total_cells), 4),
         "duplicate_rows": duplicate_rows,
         "duplicate_ratio": round(_safe_ratio(duplicate_rows, len(df) or 1), 4),
+        "datetime_invalid_cells": int(sum(datetime_invalid_counts.values())),
+        "datetime_invalid_counts": datetime_invalid_counts,
+        "column_type_counts": {
+            "numeric": list(column_types.values()).count("numeric"),
+            "datetime": list(column_types.values()).count("datetime"),
+            "categorical": list(column_types.values()).count("categorical"),
+            "string": list(column_types.values()).count("string"),
+            "id": list(column_types.values()).count("id"),
+        },
+        "warnings": list(profile.warnings) if profile else [],
         "outlier_share": 0.0,
     }
 
@@ -661,14 +983,14 @@ def _make_multiline_chart(df: pd.DataFrame, time_col: str, metric_cols: list[str
     if not time_col or not usable_metrics:
         return None
     temp = df[[time_col] + usable_metrics].copy()
-    temp[time_col] = _coerce_datetime(temp[time_col])
+    temp[time_col] = _coerce_datetime(temp[time_col], time_col)
     temp = temp.dropna(subset=[time_col])
     if temp.empty:
         return None
     grain = _choose_time_grain(temp[time_col])
     temp["period"] = _bucket_time(temp[time_col], grain)
     agg = temp.groupby("period", as_index=False)[usable_metrics].sum().sort_values("period")
-    if agg.empty:
+    if len(agg) < 2:
         return None
     palette = ["#0f766e", "#ea580c", "#2563eb", "#0f172a"]
     fig = go.Figure()
@@ -736,7 +1058,7 @@ def _make_grouped_comparison_chart(rows: list[dict[str, float]], title: str) -> 
 
 def _make_variance_chart(df: pd.DataFrame, time_col: str, category_col: str, metric_col: str, title: str) -> Optional[go.Figure]:
     temp = df[[time_col, category_col, metric_col]].copy()
-    temp[time_col] = _coerce_datetime(temp[time_col])
+    temp[time_col] = _coerce_datetime(temp[time_col], time_col)
     temp[metric_col] = _safe_numeric(temp[metric_col])
     temp = temp.dropna()
     if temp.empty:
@@ -781,7 +1103,7 @@ def _build_filter_panel(
 ) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = []
     if time_col and time_col in df.columns:
-        time_values = _coerce_datetime(df[time_col]).dropna()
+        time_values = _coerce_datetime(df[time_col], time_col).dropna()
         if not time_values.empty:
             filters.append(
                 {
@@ -826,7 +1148,7 @@ def _build_kpis(
     secondary_metrics: list[str],
     time_col: Optional[str],
 ) -> list[dict[str, str]]:
-    quality = _quality_summary(df, primary_metric)
+    quality = _quality_summary(df, primary_metric, profile)
     kpis: list[dict[str, str]] = [
         {"label": "Số dòng", "value": f"{len(df):,}", "description": "Quy mô dữ liệu được đưa vào báo cáo"},
         {"label": "Số cột", "value": str(df.shape[1]), "description": "Tổng số trường thông tin khả dụng"},
@@ -862,7 +1184,7 @@ def _build_kpis(
 
     if time_col and primary_metric:
         temp = df[[time_col, primary_metric]].copy()
-        temp[time_col] = _coerce_datetime(temp[time_col])
+        temp[time_col] = _coerce_datetime(temp[time_col], time_col)
         temp[primary_metric] = _safe_numeric(temp[primary_metric])
         temp = temp.dropna().sort_values(time_col)
         if len(temp) >= 2:
@@ -907,7 +1229,7 @@ def _build_insights(
     trend_note = None
     if time_col and primary_metric:
         temp = df[[time_col, primary_metric]].copy()
-        temp[time_col] = _coerce_datetime(temp[time_col])
+        temp[time_col] = _coerce_datetime(temp[time_col], time_col)
         temp[primary_metric] = _safe_numeric(temp[primary_metric])
         temp = temp.dropna().sort_values(time_col)
         if len(temp) >= 2:
@@ -1271,6 +1593,7 @@ def _build_finance_dashboard_result(
     profile: SchemaProfile,
 ) -> dict[str, Any]:
     working_df = df.copy()
+    request = _classify_dashboard_request(goal)
     time_col = _pick_best_time_col(working_df, profile)
     revenue_col = _find_matching_column(profile.numeric_cols, FINANCE_METRIC_ALIASES["revenue"])
     cost_col = _find_matching_column(profile.numeric_cols, FINANCE_METRIC_ALIASES["cost"])
@@ -1294,7 +1617,7 @@ def _build_finance_dashboard_result(
     order_col = _find_matching_column(profile.id_cols + profile.categorical_cols, ["order", "invoice", "transaction"])
     customer_col = _find_matching_column(profile.id_cols + profile.categorical_cols, ["customer", "client"])
     dimension_cols = _pick_dimension_candidates(working_df, profile, FINANCE_DIMENSION_HINTS, max_count=4)
-    quality = _quality_summary(working_df, revenue_col or profit_col or margin_col)
+    quality = _quality_summary(working_df, revenue_col or profit_col or margin_col, profile)
     target_cols = {
         "revenue": _find_target_column(profile.numeric_cols, FINANCE_METRIC_ALIASES["revenue"]),
         "cost": _find_target_column(profile.numeric_cols, FINANCE_METRIC_ALIASES["cost"]),
@@ -1311,6 +1634,12 @@ def _build_finance_dashboard_result(
     ) if time_col else None
     if trend_fig is not None:
         trend_charts.append({"title": "Xu hướng KPI tài chính", "kind": "trend", "figure": trend_fig})
+
+    finance_metric = revenue_col or profit_col or cost_col
+    if finance_metric and not trend_charts:
+        trend_charts.append(_chart_message(f"Xu huong {finance_metric}", "trend", "Khong tim thay cot thoi gian hop le nen bo qua bieu do xu huong."))
+    elif trend_charts and trend_charts[-1].get("figure") is None:
+        trend_charts[-1]["message"] = "Khong du it nhat 2 moc thoi gian hop le de ve bieu do xu huong."
 
     breakdown_charts: list[dict[str, Any]] = []
     if revenue_col and dimension_cols:
@@ -1376,12 +1705,7 @@ def _build_finance_dashboard_result(
         "__type__": "dashboard",
         "title": f"Dashboard: {dataset_name}",
         "subtitle": f"{ROLE_LABELS.get(role, role.title())} | Theo dõi hiệu quả và variance tài chính.",
-        "schema": {
-            "time_cols": profile.time_cols,
-            "numeric_cols": profile.numeric_cols,
-            "categorical_cols": profile.categorical_cols,
-            "id_cols": profile.id_cols,
-        },
+        "schema": _schema_payload(profile),
         "quality": quality,
         "kpis": kpis,
         "charts": _flatten_section_charts(sections)[:6],
@@ -1409,6 +1733,8 @@ def _build_finance_dashboard_result(
             "domain": "finance",
             "role": role,
             "goal": goal or "dashboard tài chính tự động",
+            "result_type": request["result_type"],
+            "requested_chart_type": request["chart_type"],
             "primary_metric": revenue_col or profit_col or margin_col,
             "time_col": time_col,
             "category_col": dimension_cols[0] if dimension_cols else None,
@@ -1427,6 +1753,7 @@ def _build_quant_dashboard_result(
     profile: SchemaProfile,
     domain: str,
 ) -> dict[str, Any]:
+    request = _classify_dashboard_request(goal)
     primary_metric = _pick_primary_metric(df, profile, role, domain)
     secondary_metrics = _pick_secondary_metrics(df, profile, primary_metric, role, domain)
     time_col = _pick_best_time_col(df, profile)
@@ -1435,7 +1762,7 @@ def _build_quant_dashboard_result(
         best_category = _pick_best_category(df, profile)
         dimension_cols = [best_category] if best_category else []
     binary_metric = _pick_binary_metric(df, profile)
-    quality = _quality_summary(df, primary_metric)
+    quality = _quality_summary(df, primary_metric, profile)
     kpis = _build_quant_kpis(df, primary_metric, time_col, binary_metric)
 
     distribution_charts: list[dict[str, Any]] = []
@@ -1458,6 +1785,10 @@ def _build_quant_dashboard_result(
                 ),
             }
         )
+    if primary_metric and not trend_charts:
+        trend_charts.append(_chart_message(f"Xu huong {primary_metric}", "trend", "Khong tim thay cot thoi gian hop le nen bo qua bieu do xu huong."))
+    elif trend_charts and trend_charts[-1].get("figure") is None:
+        trend_charts[-1]["message"] = "Khong du it nhat 2 moc thoi gian hop le de ve bieu do xu huong."
 
     breakdown_charts: list[dict[str, Any]] = []
     if dimension_cols and primary_metric:
@@ -1484,9 +1815,29 @@ def _build_quant_dashboard_result(
                 "figure": _make_scatter_chart(df, primary_metric, secondary_metrics[0], dimension_cols[0] if dimension_cols else None),
             }
         )
-    heatmap = _make_heatmap(df, [primary_metric] + secondary_metrics if primary_metric else secondary_metrics)
+    scatter_pair = _pick_scatter_pair(primary_metric, secondary_metrics)
+    if scatter_pair and relationship_charts:
+        x_col, y_col = scatter_pair
+        relationship_charts[0] = {
+            "title": f"Quan he {x_col} -> {y_col}",
+            "kind": "relationship",
+            "figure": _make_scatter_chart(df, x_col, y_col, dimension_cols[0] if dimension_cols else None),
+        }
+        if relationship_charts[0].get("figure") is None:
+            relationship_charts[0]["message"] = "Khong du cap gia tri so hop le de ve scatter plot."
+    elif primary_metric and not relationship_charts:
+        relationship_charts.append(_chart_message(f"Tuong quan {primary_metric}", "relationship", "Can them mot cot so khac de ve scatter plot."))
+
+    heatmap_cols = [primary_metric] + secondary_metrics if primary_metric else secondary_metrics
+    heatmap = _make_heatmap(df, heatmap_cols)
     if heatmap is not None:
         relationship_charts.append({"title": "Bản đồ tương quan", "kind": "relationship", "figure": heatmap})
+
+    if heatmap is not None and relationship_charts:
+        relationship_charts[-1]["title"] = "Heatmap tuong quan"
+        relationship_charts[-1]["note"] = _heatmap_note(df, heatmap_cols)
+    elif heatmap is None:
+        relationship_charts.append(_chart_message("Heatmap tuong quan", "relationship", _heatmap_note(df, heatmap_cols)))
 
     insights_list = _build_quant_insight_items(df, primary_metric, secondary_metrics, time_col, dimension_cols, binary_metric, quality)
     filters = _build_filter_panel(df, profile, time_col, dimension_cols)
@@ -1503,7 +1854,7 @@ def _build_quant_dashboard_result(
             "id": "trend",
             "title": "Xu hướng",
             "placement": "main",
-            "charts": [chart for chart in trend_charts if chart.get("figure") is not None],
+            "charts": [chart for chart in trend_charts if chart.get("figure") is not None or chart.get("message")],
             "note": "Chỉ hiển thị khi có cột thời gian hợp lệ.",
         },
         {
@@ -1517,7 +1868,7 @@ def _build_quant_dashboard_result(
             "id": "relationship",
             "title": "Tương quan",
             "placement": "main",
-            "charts": [chart for chart in relationship_charts if chart.get("figure") is not None],
+            "charts": [chart for chart in relationship_charts if chart.get("figure") is not None or chart.get("message")],
             "note": "Chỉ giữ scatter/heatmap cần thiết.",
         },
         {"id": "insight_box", "title": "Nhận xét", "placement": "side", "items": insights_list},
@@ -1535,12 +1886,7 @@ def _build_quant_dashboard_result(
         "__type__": "dashboard",
         "title": f"Dashboard: {dataset_name}",
         "subtitle": f"{ROLE_LABELS.get(role, role.title())} | Dashboard định lượng đa biến, gọn và tập trung insight.",
-        "schema": {
-            "time_cols": profile.time_cols,
-            "numeric_cols": profile.numeric_cols,
-            "categorical_cols": profile.categorical_cols,
-            "id_cols": profile.id_cols,
-        },
+        "schema": _schema_payload(profile),
         "quality": quality,
         "kpis": kpis,
         "charts": _flatten_section_charts(sections)[:6],
@@ -1568,6 +1914,8 @@ def _build_quant_dashboard_result(
             "domain": domain,
             "role": role,
             "goal": goal or "dashboard định lượng tự động",
+            "result_type": request["result_type"],
+            "requested_chart_type": request["chart_type"],
             "primary_metric": primary_metric,
             "time_col": time_col,
             "category_col": dimension_cols[0] if dimension_cols else None,
@@ -1584,7 +1932,8 @@ def build_auto_dashboard(
     goal: str = "",
 ) -> dict[str, Any]:
     profile = _detect_schema(df)
-    domain = _detect_domain([str(col) for col in df.columns])
+    prepared_df = _prepare_dashboard_frame(df, profile)
+    domain = _detect_domain([str(col) for col in prepared_df.columns])
     goal_norm = _normalize_name(goal or "")
     finance_signals = [
         col
@@ -1596,8 +1945,8 @@ def build_auto_dashboard(
         ["tai_chinh", "doanh_thu", "loi_nhuan", "chi_phi", "margin", "financial", "finance"],
     )
     if use_finance:
-        return _build_finance_dashboard_result(df, dataset_name, role, goal, profile)
-    return _build_quant_dashboard_result(df, dataset_name, role, goal, profile, domain)
+        return _build_finance_dashboard_result(prepared_df, dataset_name, role, goal, profile)
+    return _build_quant_dashboard_result(prepared_df, dataset_name, role, goal, profile, domain)
 
 
 def build_dashboard_report(

@@ -87,6 +87,20 @@ AUTH_DB_URL=mysql+pymysql://ai_app:<url-encoded-password>@mysql-chatbot.c3igik0c
 
 The IP in the error message, for example `103.2.227.166`, is the client IP seen by MySQL. If this IP belongs to TOSE, use `103.2.227.166/32` in the RDS security group instead of leaving `0.0.0.0/0` open.
 
+If the error says:
+
+```text
+(1045, "Access denied for user 'chatbot_app'@'localhost' (using password: YES)")
+```
+
+then the deployed app is not using the RDS URL from this repository. Replace the TOSE `AUTH_DB_URL` value and restart/redeploy:
+
+```text
+mysql+pymysql://root:<url-encoded-password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot?charset=utf8mb4
+```
+
+Do not use a URL with `localhost`, `127.0.0.1`, `chatbot_app`, or database `chatbot_auth` unless those values have been explicitly created and granted on the target MySQL server.
+
 ## URL parse errors
 
 If the app shows:

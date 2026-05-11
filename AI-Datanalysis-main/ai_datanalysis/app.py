@@ -19,6 +19,7 @@ except Exception:
     pass
 
 from ai_datanalysis.auth import get_session_username, init_auth_db
+from ai_datanalysis.config import inspect_auth_db_url, validate_auth_db_url
 from ai_datanalysis.secure_cookie_manager import EncryptedCookieManager
 from ai_datanalysis.services.chat_service import (
     create_chat_history,
@@ -67,8 +68,8 @@ _MODEL_AGENT_ATTEMPTS = {
 def get_auth_engine():
     """Cached once per app instance — connection pool is shared across all users/reruns."""
     auth_db_url = os.getenv("AUTH_DB_URL", "").strip()
-    if not auth_db_url:
-        raise RuntimeError("Missing AUTH_DB_URL env var.")
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    validate_auth_db_url(auth_db_url, app_env)
     connect_timeout_s = int(os.getenv("DB_CONNECT_TIMEOUT_S", "10"))
     pool_timeout_s = int(os.getenv("DB_POOL_TIMEOUT_S", "10"))
     return create_engine(
@@ -294,17 +295,30 @@ def _render_startup_error(title: str, detail: str, ex: Exception, hints: list[st
 
 def _render_database_startup_error(ex: Exception) -> None:
     raw = str(ex).lower()
+    auth_db_url = os.getenv("AUTH_DB_URL", "").strip()
     hints = [
         "Verify AUTH_DB_URL is set on the deployment platform and points to the existing database name.",
         "For this RDS instance, local checks found the existing database name is `chatbot`, not `chatbot_auth`.",
         "Allow outbound traffic from the deployment platform to the RDS security group on TCP port 3306.",
         "If RDS is outside the deployment network, it must be publicly reachable or connected through a private network/VPC tunnel.",
     ]
+    if auth_db_url:
+        try:
+            info = inspect_auth_db_url(auth_db_url)
+            hints.insert(0, f"Current AUTH_DB_URL target: `{info.summary}`.")
+            if info.is_local_host:
+                hints.insert(1, "The deployment is still using a local MySQL target. Set AUTH_DB_URL to the RDS endpoint, not localhost or 127.0.0.1.")
+        except Exception:
+            pass
     if "timed out" in raw or "(2003" in raw:
         hints.insert(0, "The app can resolve the RDS host, but the network path to MySQL port 3306 is timing out.")
+    elif "local mysql host in production" in raw:
+        hints.insert(0, "Production is configured with a local MySQL host. Re-push or replace AUTH_DB_URL on the deployment platform.")
     elif "access denied" in raw or "(1045" in raw:
         hints.insert(0, "The MySQL host is reachable, but the database rejected the username/password or user host permission.")
         hints.insert(1, "Update AUTH_DB_URL on the deployment platform with the correct MySQL username and URL-encoded password.")
+        if "@'localhost'" in raw:
+            hints.insert(2, "MySQL reports the client as localhost, which usually means the deployed AUTH_DB_URL is still targeting local MySQL instead of RDS.")
     elif "could not parse sqlalchemy url" in raw:
         hints.insert(0, "AUTH_DB_URL is not a valid SQLAlchemy URL. On the deployment platform, set the key to AUTH_DB_URL and the value to only the mysql+pymysql://... URL.")
         hints.insert(1, "Do not include quotes, backticks, spaces, angle brackets, or the literal `AUTH_DB_URL=` prefix inside the value field.")

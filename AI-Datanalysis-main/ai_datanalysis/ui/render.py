@@ -54,14 +54,17 @@ def _render_quality(quality: dict, title: str = "Chất lượng dữ liệu") -
     if not quality:
         return
     st.markdown(f"#### {title}")
-    cols = st.columns(3)
+    cols = st.columns(4)
     cols[0].metric("Thiếu", f"{quality.get('missing_ratio', 0.0):.1%}")
     cols[1].metric("Trùng lặp", f"{quality.get('duplicate_ratio', 0.0):.1%}")
     cols[2].metric("Ngoại lệ", f"{quality.get('outlier_share', 0.0):.1%}")
+    cols[3].metric("Loi thoi gian", quality.get("datetime_invalid_cells", 0))
+    for warning in quality.get("warnings", [])[:4]:
+        st.warning(warning)
 
 
 def _render_chart_grid(charts: list[dict]) -> None:
-    charts = [c for c in charts if c.get("figure") is not None]
+    charts = [c for c in charts if c.get("figure") is not None or c.get("message")]
     if not charts:
         return
     for idx in range(0, len(charts), 2):
@@ -76,6 +79,10 @@ def _render_chart_grid(charts: list[dict]) -> None:
                         use_container_width=True,
                         key=_next_plotly_key("dashboard_chart"),
                     )
+                    if note := chart.get("note"):
+                        st.caption(note)
+                elif message := chart.get("message"):
+                    st.info(message)
 
 
 def _render_filter_panel(filters: list[dict]) -> None:
