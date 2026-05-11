@@ -12,7 +12,9 @@ from sqlalchemy import create_engine
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(override=True)
+    # Load local .env defaults without overriding environment variables injected
+    # by the deployment platform.
+    load_dotenv(override=False)
 except Exception:
     pass
 

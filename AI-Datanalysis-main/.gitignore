@@ -7,6 +7,10 @@ __pycache__/
 .ruff_cache/
 
 .env
+.env.*
+!.env.example
+!.env.local.example
+!.env.tose.example
 
 data/runtime/cache/
 data/runtime/chat_history/

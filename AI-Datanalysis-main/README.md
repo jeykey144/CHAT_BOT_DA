@@ -127,17 +127,20 @@ poetry install
 ### 2 — Cấu hình môi trường
 
 ```bash
-cp .env.example .env
+cp .env.local.example .env
 # Chỉnh sửa .env với thông tin thực tế
 ```
 
 Các biến **bắt buộc**:
 
 ```env
-AUTH_DB_URL=mysql+pymysql://root:<password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/<database_name>?charset=utf8mb4
+APP_ENV=development
+AUTH_DB_URL=mysql+pymysql://root:<local-password>@127.0.0.1:3306/chatbot?charset=utf8mb4
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_...
 ```
+
+Deploy TOSE/AWS dung file rieng `.env.tose` hoac bien moi truong tren TOSE dashboard. Khong push `.env` local len TOSE.
 
 Biến **bảo mật** (bắt buộc trong production):
 

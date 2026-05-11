@@ -4,9 +4,10 @@ Use this checklist when TOSE build succeeds but the public URL returns Bad Gatew
 
 ## Required environment variables
 
-Set these values on TOSE, not only in local `.env`:
+Set these values on TOSE, not in the local `.env`. Use TOSE dashboard secrets or push `.env.tose`.
 
 ```env
+APP_ENV=production
 AUTH_DB_URL=mysql+pymysql://root:<password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot?charset=utf8mb4
 LLM_PROVIDER=groq
 GROQ_API_KEY=<groq-api-key>
@@ -113,12 +114,12 @@ mysql+pymysql://root:<url-encoded-password>@mysql-chatbot.c3igik0cizol.ap-southe
 From the repository root:
 
 ```powershell
-tose env push .\AI-Datanalysis-main\.env
+tose env push .\AI-Datanalysis-main\.env.tose
 tose deploy
 tose logs -f
 ```
 
-If `tose env push` is not available in your CLI version, set the same variables in the TOSE dashboard or with `tose env set`.
+Never push the local `.env` to TOSE because it points to local MySQL. If `tose env push` is not available in your CLI version, set the same variables in the TOSE dashboard or with `tose env set`.
 
 ## Expected result
 
