@@ -18,6 +18,15 @@ DB_POOL_TIMEOUT_S=10
 
 Important: the RDS database name verified from local checks is `chatbot`. Do not use `chatbot_auth` unless that database has been created on RDS.
 
+When entering variables in the TOSE dashboard, use separate key/value fields:
+
+```text
+Key:   AUTH_DB_URL
+Value: mysql+pymysql://root:<url-encoded-password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot?charset=utf8mb4
+```
+
+Do not put `AUTH_DB_URL=` inside the value field. Do not wrap the value in quotes, backticks, or angle brackets.
+
 ## RDS network access
 
 If TOSE logs show:
@@ -42,6 +51,62 @@ Source: TOSE outbound IP/CIDR
 ```
 
 For a short connectivity test only, use `0.0.0.0/0`, redeploy/restart TOSE, then replace it with a narrower source as soon as possible.
+
+## MySQL authentication
+
+If TOSE logs show:
+
+```text
+(1045, "Access denied for user 'root'@'<ip>' (using password: YES)")
+```
+
+the network path is open and RDS is receiving the connection. The problem is now MySQL authentication or user permission.
+
+Fix it in this order:
+
+1. Verify `AUTH_DB_URL` on TOSE uses the current RDS password, not an old local password.
+2. Verify the database name is `chatbot`.
+3. If the password contains special URL characters such as `@`, `#`, `%`, `:`, `/`, `?`, `&`, or `+`, URL-encode the password before placing it in `AUTH_DB_URL`.
+4. Prefer creating a dedicated MySQL user for the app instead of using `root`.
+
+Example dedicated app user:
+
+```sql
+CREATE USER 'ai_app'@'%' IDENTIFIED BY '<strong-password>';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES
+ON chatbot.* TO 'ai_app'@'%';
+FLUSH PRIVILEGES;
+```
+
+Then set TOSE:
+
+```env
+AUTH_DB_URL=mysql+pymysql://ai_app:<url-encoded-password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot?charset=utf8mb4
+```
+
+The IP in the error message, for example `103.2.227.166`, is the client IP seen by MySQL. If this IP belongs to TOSE, use `103.2.227.166/32` in the RDS security group instead of leaving `0.0.0.0/0` open.
+
+## URL parse errors
+
+If the app shows:
+
+```text
+Could not parse SQLAlchemy URL from given URL string
+```
+
+then `AUTH_DB_URL` is malformed on TOSE. Common mistakes:
+
+- The value field contains `AUTH_DB_URL=mysql+pymysql://...` instead of only `mysql+pymysql://...`.
+- The value is wrapped in quotes, backticks, or angle brackets.
+- The password still contains placeholder text such as `<password>`.
+- The password contains reserved URL characters and was not URL-encoded.
+- The value was pasted with a line break or hidden leading/trailing spaces.
+
+Correct value format:
+
+```text
+mysql+pymysql://root:<url-encoded-password>@mysql-chatbot.c3igik0cizol.ap-southeast-1.rds.amazonaws.com:3306/chatbot?charset=utf8mb4
+```
 
 ## Deploy flow
 

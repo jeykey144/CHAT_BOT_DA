@@ -8,14 +8,47 @@ from typing import Dict, Optional
 
 import pandas as pd
 
+from ai_datanalysis.core.normalization import normalize_query
 from ai_datanalysis.core.semantic_columns import score_query_to_column
 
 
 _ID_COL_PATTERN = re.compile(r"(^|_)(id|code|key|ma|sbd)(_|$)")
+_GROUP_AGGREGATION_CUES = (
+    "theo",
+    "theo tung",
+    "tung",
+    "moi",
+    "group by",
+    "by",
+    "giua",
+    "so sanh",
+    "cao hon",
+    "thap hon",
+    "lon hon",
+    "nho hon",
+    "nao",
+)
 
 
 def _normalize_text(text: str) -> str:
     return str(text).strip().lower()
+
+
+def _column_phrase(column_name: str) -> str:
+    normalized = normalize_query(str(column_name)).replace("/", " ")
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _query_mentions_column(query: str, column_name: str) -> bool:
+    phrase = _column_phrase(column_name)
+    if not phrase:
+        return False
+    return bool(re.search(r"\b" + re.escape(phrase) + r"\b", query))
+
+
+def _query_references_column(query: str, column_name: str) -> bool:
+    return _query_mentions_column(query, column_name) or score_query_to_column(query, column_name) > 0
 
 
 def _resolve_metric_column(query: str, df: pd.DataFrame) -> Optional[str]:
@@ -27,6 +60,8 @@ def _resolve_metric_column(query: str, df: pd.DataFrame) -> Optional[str]:
         if not pd.api.types.is_numeric_dtype(df[col]):
             continue
         score = score_query_to_column(q, str(col))
+        if _query_mentions_column(q, str(col)):
+            score += 5.0
         if score > best_score:
             best_score = score
             best_col = str(col)
@@ -62,6 +97,80 @@ def _resolve_group_column(query: str, df: pd.DataFrame) -> Optional[str]:
     if best_col and best_score > 0:
         return best_col
     return None
+
+
+def _explicit_group_values(query: str, df: pd.DataFrame, group_col: str) -> list[str]:
+    matched_values: list[str] = []
+    series = df[group_col].dropna()
+    for value in series.unique():
+        value_text = str(value).strip()
+        if not value_text:
+            continue
+        value_norm = normalize_query(value_text)
+        if value_norm and re.search(r"\b" + re.escape(value_norm) + r"\b", query):
+            matched_values.append(value_text)
+    return matched_values
+
+
+def _grouped_aggregate_code(query: str, df: pd.DataFrame, metric_col: str) -> Optional[str]:
+    q = _normalize_text(query)
+    group_col = _resolve_group_column(q, df)
+    if not group_col:
+        return None
+
+    if not _query_references_column(q, group_col):
+        return None
+
+    if not _contains_any(q, *_GROUP_AGGREGATION_CUES):
+        return None
+
+    if _contains_any(q, "trung binh", "average", "mean"):
+        agg_method = "mean"
+        value_col = f"{metric_col}_mean"
+    elif _contains_any(q, "tong", "sum", "total"):
+        agg_method = "sum"
+        value_col = f"{metric_col}_sum"
+    else:
+        return None
+
+    values = _explicit_group_values(q, df, group_col)
+    filter_code = ""
+    if values:
+        filter_code = (
+            f"allowed = {[str(value) for value in values]!r}\n"
+            f"df = df[df[{group_col!r}].astype(str).isin(allowed)]\n"
+        )
+
+    ascending = "True" if _contains_any(q, "thap hon", "thap nhat", "nho hon", "nho nhat", "min", "lowest") else "False"
+    sort_code = ""
+    if _contains_any(
+        q,
+        "cao hon",
+        "cao nhat",
+        "lon hon",
+        "lon nhat",
+        "thap hon",
+        "thap nhat",
+        "nho hon",
+        "nho nhat",
+        "max",
+        "min",
+        "highest",
+        "lowest",
+        "so sanh",
+        "giua",
+    ):
+        sort_code = f"result = result.sort_values({value_col!r}, ascending={ascending}).reset_index(drop=True)\n"
+
+    return (
+        "df = DF_1.copy()\n"
+        f"df[{metric_col!r}] = pd.to_numeric(df[{metric_col!r}], errors='coerce')\n"
+        f"df = df.dropna(subset=[{group_col!r}, {metric_col!r}])\n"
+        f"{filter_code}"
+        f"result = df.groupby({group_col!r}, as_index=False)[{metric_col!r}].{agg_method}()"
+        f".rename(columns={{{metric_col!r}: {value_col!r}}})\n"
+        f"{sort_code}"
+    ).rstrip()
 
 
 def _resolve_id_like_column(query: str, df: pd.DataFrame) -> Optional[str]:
@@ -455,7 +564,16 @@ def try_fast_path(normalized_query: str, data: Dict[str, pd.DataFrame], graph_ty
         if histogram_code:
             return histogram_code
 
-    if _contains_any(q, "bieu do", "chart", "plot", "do thi", "theo", "by ", "tung", "moi ", "group by"):
+    if _contains_any(q, "bieu do", "chart", "plot", "do thi"):
+        return None
+
+    metric_col = _resolve_metric_column(q, df)
+    if metric_col:
+        grouped_code = _grouped_aggregate_code(q, df, metric_col)
+        if grouped_code:
+            return grouped_code
+
+    if _contains_any(q, "theo", "by", "tung", "moi", "group by"):
         return None
 
     which_category = (
@@ -490,7 +608,6 @@ def try_fast_path(normalized_query: str, data: Dict[str, pd.DataFrame], graph_ty
     if q in ("shape", "kich thuoc", "info", "thong tin"):
         return "result = f'Dataset có {DF_1.shape[0]} dòng và {DF_1.shape[1]} cột.'"
 
-    metric_col = _resolve_metric_column(q, df)
     if metric_col:
         if _contains_any(q, "thap nhat va", "cao nhat va", "minimum and maximum", "min and max"):
             low_label, high_label = _extreme_labels(q, metric_col)

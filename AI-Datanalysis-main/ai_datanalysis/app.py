@@ -300,6 +300,12 @@ def _render_database_startup_error(ex: Exception) -> None:
     ]
     if "timed out" in raw or "(2003" in raw:
         hints.insert(0, "The app can resolve the RDS host, but the network path to MySQL port 3306 is timing out.")
+    elif "access denied" in raw or "(1045" in raw:
+        hints.insert(0, "The MySQL host is reachable, but the database rejected the username/password or user host permission.")
+        hints.insert(1, "Update AUTH_DB_URL on the deployment platform with the correct MySQL username and URL-encoded password.")
+    elif "could not parse sqlalchemy url" in raw:
+        hints.insert(0, "AUTH_DB_URL is not a valid SQLAlchemy URL. On the deployment platform, set the key to AUTH_DB_URL and the value to only the mysql+pymysql://... URL.")
+        hints.insert(1, "Do not include quotes, backticks, spaces, angle brackets, or the literal `AUTH_DB_URL=` prefix inside the value field.")
     elif "unknown database" in raw:
         hints.insert(0, "The MySQL host is reachable, but AUTH_DB_URL uses a database name that does not exist.")
 

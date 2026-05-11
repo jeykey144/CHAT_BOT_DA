@@ -17,6 +17,7 @@ from ai_datanalysis.paths import CACHE_CODE_DIR, CACHE_RESULTS_DIR
 _PROHIBITED_CALL_NAMES = frozenset({
     "read_csv", "read_excel", "read_parquet", "read_json", "read_pickle", "open",
 })
+_CACHE_KEY_VERSION = "v2-fast-path-grouped-aggregation"
 
 def _hash_dataframe(df: pd.DataFrame) -> str:
     normalized = df.copy()
@@ -41,7 +42,7 @@ def _hash_schema(data: Dict[str, pd.DataFrame], scope: str = "global") -> str:
 
 
 def _hash_query(query: str, schema_fingerprint: str) -> str:
-    combined = f"{query}###{schema_fingerprint}"
+    combined = f"{_CACHE_KEY_VERSION}###{query}###{schema_fingerprint}"
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
 
@@ -108,7 +109,7 @@ class AICache:
 
     def get_result(self, query: str, data: Dict[str, pd.DataFrame], scope: str = "global") -> Optional[Any]:
         fingerprint = _hash_schema(data, scope=scope)
-        combo = f"{query}###{fingerprint}"
+        combo = f"{_CACHE_KEY_VERSION}###{query}###{fingerprint}"
         h = hashlib.sha256(combo.encode("utf-8")).hexdigest()
         path = self.result_cache_dir / f"{h}.json"
         if path.exists():
@@ -124,7 +125,7 @@ class AICache:
 
     def set_result(self, query: str, data: Dict[str, pd.DataFrame], result: Any, scope: str = "global"):
         fingerprint = _hash_schema(data, scope=scope)
-        combo = f"{query}###{fingerprint}"
+        combo = f"{_CACHE_KEY_VERSION}###{query}###{fingerprint}"
         h = hashlib.sha256(combo.encode("utf-8")).hexdigest()
         path = self.result_cache_dir / f"{h}.json"
         payload = _serialize_result(result)

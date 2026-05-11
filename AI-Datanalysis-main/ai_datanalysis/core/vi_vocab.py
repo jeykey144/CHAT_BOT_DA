@@ -503,6 +503,7 @@ VI_TOKEN_SYNONYMS: dict[str, set[str]] = {
     "description": {"description", "mo ta", "ghi chu"},
     "salary":      {"salary", "luong", "thu nhap", "muc luong"},
     "age":         {"age", "tuoi", "do tuoi"},
+    "gender":      {"gender", "gioi tinh", "sex"},
 
     # ── Đơn vị ────────────────────────────────────────────────────────
     "pct":         {"pct", "percent", "phan tram", "%"},

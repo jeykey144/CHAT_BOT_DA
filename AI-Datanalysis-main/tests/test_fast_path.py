@@ -80,6 +80,35 @@ def test_fast_path_generic_revenue_average():
     assert ".mean()" in code
 
 
+def test_fast_path_grouped_mean_prefers_explicit_metric_over_avg_column():
+    df = pd.DataFrame(
+        {
+            "gender": ["F", "F", "M", "M"],
+            "toan": [6.0, 8.0, 7.0, 9.0],
+            "avg_core_3": [5.0, 5.0, 6.0, 6.0],
+        }
+    )
+    data = {"exam": df}
+
+    for query in (
+        "gender nao co diem trung binh mon thi toan cao hon?",
+        "so sanh diem thi trung binh cua mon toan giua 2 gender f va m.",
+    ):
+        code = try_fast_path(query, data)
+
+        assert code is not None
+        assert "groupby('gender'" in code
+        assert "toan_mean" in code
+        assert "avg_core_3" not in code
+
+        outcome = LocalRestrictedExecutor().run(code, [df])
+
+        assert outcome.ok is True
+        result = outcome.result
+        assert result["gender"].tolist() == ["M", "F"]
+        assert result["toan_mean"].tolist() == [8.0, 7.0]
+
+
 def test_fast_path_skips_chart_queries():
     df = pd.DataFrame(
         {
